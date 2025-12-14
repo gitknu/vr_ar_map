@@ -1,0 +1,350 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Calibrated AR</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #000; font-family: monospace; }
+        
+        /* 1. VIDEO FEED (Potato Mode for Speed) */
+        #camera-feed {
+            position: absolute;
+            top: 50%; left: 50%;
+            transform: translate(-50%, -50%);
+            min-width: 100%; min-height: 100%;
+            width: auto; height: auto;
+            z-index: 0;
+            object-fit: cover;
+            filter: contrast(1.1); 
+        }
+
+        /* 2. AR CANVAS */
+        #ar-overlay {
+            position: absolute;
+            top: 0; left: 0;
+            width: 100%; height: 100%;
+            z-index: 1;
+            background: transparent;
+        }
+
+        /* 3. CENTER CROSSHAIR (Crucial for Calibration) */
+        #crosshair {
+            position: absolute;
+            top: 50%; left: 50%;
+            width: 20px; height: 20px;
+            transform: translate(-50%, -50%);
+            z-index: 2;
+            pointer-events: none;
+        }
+        #crosshair::before, #crosshair::after {
+            content: ''; position: absolute; background: #00ff00;
+        }
+        #crosshair::before { top: 9px; left: 0; width: 20px; height: 2px; } /* Horizontal */
+        #crosshair::after { top: 0; left: 9px; width: 2px; height: 20px; } /* Vertical */
+
+        /* 4. UI */
+        #ui-layer {
+            position: absolute;
+            bottom: 30px; left: 0; width: 100%;
+            z-index: 10;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 10px;
+            pointer-events: none;
+        }
+
+        .btn {
+            pointer-events: auto;
+            padding: 15px 30px;
+            font-size: 16px;
+            border: none;
+            border-radius: 50px;
+            font-weight: 800;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.6);
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            transition: transform 0.1s;
+        }
+        .btn:active { transform: scale(0.95); }
+
+        #btn-main { background: #32D74B; color: black; } /* Green */
+        #btn-calib { background: #FF9500; color: white; display: none; } /* Orange */
+
+        #status-text {
+            color: white; 
+            background: rgba(0,0,0,0.6);
+            padding: 5px 12px;
+            border-radius: 12px;
+            font-size: 12px;
+            text-shadow: 1px 1px 2px black;
+        }
+
+        #debug {
+            position: absolute; top: 5px; left: 5px;
+            color: #00FF00; background: rgba(0,0,0,0.5);
+            padding: 4px; font-size: 9px; z-index: 20; pointer-events: none;
+        }
+    </style>
+    <!-- Three.js Core -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+</head>
+<body>
+
+    <video id="camera-feed" playsinline autoplay muted></video>
+    <canvas id="ar-overlay"></canvas>
+    
+    <!-- Crosshair for aiming -->
+    <div id="crosshair"></div>
+    <div id="debug">System Ready.</div>
+    
+    <div id="ui-layer">
+        <div id="status-text">Tap Start to Initialize</div>
+        <button id="btn-calib" class="btn">FIX DRIFT (Tap Object)</button>
+        <button id="btn-main" class="btn">START AR</button>
+    </div>
+
+    <script>
+        // --------------------------------------------------------------------------
+        // 1. SENSOR LOGIC (Smoothed)
+        // --------------------------------------------------------------------------
+        class SmoothOrientationControls {
+            constructor(object) {
+                this.object = object;
+                this.object.rotation.reorder('YXZ');
+                this.enabled = true;
+                this.deviceOrientation = {};
+                this.screenOrientation = 0;
+                
+                // Caching objects to avoid GC lag
+                this.targetQuaternion = new THREE.Quaternion();
+                this.euler = new THREE.Euler();
+                this.q0 = new THREE.Quaternion();
+                this.q1 = new THREE.Quaternion(-Math.sqrt(0.5), 0, 0, Math.sqrt(0.5)); 
+                this.zee = new THREE.Vector3(0, 0, 1);
+
+                window.addEventListener('deviceorientation', e => this.deviceOrientation = e, false);
+                window.addEventListener('orientationchange', () => this.screenOrientation = window.orientation || 0, false);
+                this.screenOrientation = window.orientation || 0;
+            }
+
+            update() {
+                if (!this.enabled || !this.deviceOrientation.alpha) return;
+
+                const alpha = this.deviceOrientation.alpha ? THREE.Math.degToRad(this.deviceOrientation.alpha) : 0;
+                const beta = this.deviceOrientation.beta ? THREE.Math.degToRad(this.deviceOrientation.beta) : 0;
+                const gamma = this.deviceOrientation.gamma ? THREE.Math.degToRad(this.deviceOrientation.gamma) : 0;
+                const orient = this.screenOrientation ? THREE.Math.degToRad(this.screenOrientation) : 0;
+
+                this.euler.set(beta, alpha, -gamma, 'YXZ'); 
+                this.targetQuaternion.setFromEuler(this.euler); 
+                this.targetQuaternion.multiply(this.q1); 
+                this.targetQuaternion.multiply(this.q0.setFromAxisAngle(this.zee, -orient));
+
+                // SLERP for butter-smooth rotation (0.1 = heavy smoothing, 0.2 = responsive)
+                this.object.quaternion.slerp(this.targetQuaternion, 0.15);
+            }
+        }
+
+        // --------------------------------------------------------------------------
+        // 2. MAIN APP VARIABLES
+        // --------------------------------------------------------------------------
+        const video = document.getElementById('camera-feed');
+        const canvas = document.getElementById('ar-overlay');
+        const debug = document.getElementById('debug');
+        const btnMain = document.getElementById('btn-main');
+        const btnCalib = document.getElementById('btn-calib');
+        const statusText = document.getElementById('status-text');
+
+        let scene, camera, renderer, controls;
+        let floorPlane;
+        
+        // "World Root" allows us to shift the entire universe to correct drift
+        let worldRoot; 
+        let markerMesh = null;
+        let isLocked = false; // False = Placing mode, True = Locked/Calibration mode
+
+        const raycaster = new THREE.Raycaster();
+        // We use center of screen (0,0) for crosshair raycasting
+        const centerScreen = new THREE.Vector2(0, 0); 
+        const hitTarget = new THREE.Vector3();
+
+        function log(msg) { debug.innerText = msg; }
+
+        // --------------------------------------------------------------------------
+        // 3. INIT CAMERA (Potato Mode for Speed)
+        // --------------------------------------------------------------------------
+        async function initCamera() {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({
+                    video: { 
+                        facingMode: 'environment',
+                        width: { ideal: 320 }, 
+                        height: { ideal: 240 } 
+                    },
+                    audio: false
+                });
+                video.srcObject = stream;
+                video.play();
+            } catch (e) {
+                log("Cam Error: " + e.message);
+            }
+        }
+
+        // --------------------------------------------------------------------------
+        // 4. INIT THREE.JS
+        // --------------------------------------------------------------------------
+        function initThree() {
+            scene = new THREE.Scene();
+            
+            // Create a Group to hold the square. 
+            // When we "Calibrate", we move this group, not the square itself.
+            worldRoot = new THREE.Group();
+            scene.add(worldRoot);
+
+            camera = new THREE.PerspectiveCamera(80, window.innerWidth / window.innerHeight, 0.1, 100);
+            
+            renderer = new THREE.WebGLRenderer({ 
+                canvas: canvas, 
+                alpha: true, 
+                antialias: false,
+                precision: 'lowp',
+                powerPreference: 'high-performance'
+            });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(1); 
+
+            // Light
+            const light = new THREE.AmbientLight(0xffffff, 2); 
+            scene.add(light);
+
+            // Floor (Mathematical Plane at -1.6m)
+            floorPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 1.6);
+            
+            animate();
+        }
+
+        // --------------------------------------------------------------------------
+        // 5. APP LOGIC
+        // --------------------------------------------------------------------------
+        
+        // A. Start Button
+        btnMain.addEventListener('click', () => {
+            if (!controls) {
+                // First Click: Init Sensors
+                if (typeof DeviceOrientationEvent?.requestPermission === 'function') {
+                    DeviceOrientationEvent.requestPermission().then(res => {
+                        if (res === 'granted') startAR();
+                    });
+                } else {
+                    startAR();
+                }
+            } else if (!isLocked) {
+                // Second Click: LOCK placement
+                isLocked = true;
+                btnMain.style.display = 'none'; // Hide main button
+                btnCalib.style.display = 'block'; // Show calibration button
+                statusText.innerText = "Walk around. If square drifts, aim at real spot & tap button.";
+                log("Position Locked.");
+                
+                // Visual feedback on marker
+                if(markerMesh) markerMesh.material.color.setHex(0x00FF00); // Turn Green
+            }
+        });
+
+        function startAR() {
+            controls = new SmoothOrientationControls(camera);
+            btnMain.innerText = "LOCK POSITION";
+            statusText.innerText = "Aim at floor & Tap 'Lock Position'";
+            log("Sensors Active.");
+        }
+
+        // B. Raycasting Logic (Updates every frame for placement, or on click for calib)
+        function performRaycast() {
+            raycaster.setFromCamera(centerScreen, camera);
+            
+            if (raycaster.ray.intersectPlane(floorPlane, hitTarget)) {
+                return true;
+            }
+            return false;
+        }
+
+        // C. Calibration / Placement Loop
+        function updateLogic() {
+            if (!controls) return;
+
+            const hasHit = performRaycast();
+
+            // MODE 1: Initial Placement (Square follows center of screen)
+            if (!isLocked && hasHit) {
+                if (!markerMesh) {
+                    // Create Square
+                    const geo = new THREE.PlaneGeometry(0.5, 0.5); 
+                    const mat = new THREE.MeshBasicMaterial({ color: 0x00ffff, side: THREE.DoubleSide, opacity: 0.8, transparent: true });
+                    markerMesh = new THREE.Mesh(geo, mat);
+                    markerMesh.rotation.x = -Math.PI / 2;
+                    worldRoot.add(markerMesh); // Add to Group
+                }
+                // In placement mode, we stick the square to the ray hit
+                // NOTE: We must convert World Hit to Local Group Hit
+                worldRoot.worldToLocal(hitTarget); 
+                markerMesh.position.copy(hitTarget);
+                // Reset worldRoot to local conversion cleanup
+                worldRoot.localToWorld(hitTarget); 
+            }
+        }
+
+        // D. THE CALIBRATION BUTTON (The "Multiple Base Points" Logic)
+        btnCalib.addEventListener('click', () => {
+            if (!isLocked || !markerMesh) return;
+
+            // 1. User aims crosshair at where the square *SHOULD* be in reality.
+            // 2. We calculate where the ray hits the floor.
+            if (performRaycast()) {
+                // Current Virtual Position of the marker in World Space
+                const currentMarkerPos = new THREE.Vector3();
+                markerMesh.getWorldPosition(currentMarkerPos);
+
+                // The Vector Difference: RayHit - CurrentMarker
+                // If I tap 1 meter to the right of the virtual square, 
+                // it means the world needs to shift 1 meter right to match reality.
+                const offset = new THREE.Vector3().subVectors(hitTarget, currentMarkerPos);
+
+                // Apply this offset to the World Root
+                // This "drags" the virtual scene to align with the new calibration point
+                worldRoot.position.add(offset);
+                
+                log(`Calibrated! Offset: ${offset.x.toFixed(2)}, ${offset.z.toFixed(2)}`);
+                
+                // Visual Feedback
+                const oldColor = markerMesh.material.color.getHex();
+                markerMesh.material.color.setHex(0xFFFFFF); // Flash White
+                setTimeout(() => markerMesh.material.color.setHex(oldColor), 200);
+            }
+        });
+
+        // --------------------------------------------------------------------------
+        // 6. RENDER LOOP
+        // --------------------------------------------------------------------------
+        function animate() {
+            requestAnimationFrame(animate);
+            if (controls) controls.update();
+            
+            updateLogic(); // Handle placement dragging
+            
+            renderer.render(scene, camera);
+        }
+
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+        initCamera();
+        initThree();
+
+    </script>
+</body>
+</html>
