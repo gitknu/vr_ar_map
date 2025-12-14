@@ -1,159 +1,189 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <title>AR Surface Detection</title>
+    <title>AR Plane Detection</title>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
     <style>
         body {
             margin: 0;
-            background-color: #222;
-            font-family: monospace;
+            background-color: #333; /* Dark gray before AR starts */
+            font-family: sans-serif;
             overflow: hidden;
         }
+        
+        /* The overlay UI */
         #overlay {
             position: absolute;
-            top: 20px;
-            left: 0;
-            width: 100%;
-            text-align: center;
+            top: 0; left: 0; width: 100%; height: 100%;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            z-index: 999;
+            background: rgba(0,0,0,0.8);
             color: white;
-            z-index: 100;
-            pointer-events: none;
-            text-shadow: 1px 1px 2px black;
-            font-size: 14px;
+            text-align: center;
         }
-        #debug-log {
+
+        /* Giant Start Button */
+        #start-btn {
+            padding: 20px 40px;
+            font-size: 20px;
+            background: #2196F3;
+            color: white;
+            border: none;
+            border-radius: 8px;
+            margin-top: 20px;
+            cursor: pointer;
+        }
+
+        #debug-console {
             position: absolute;
-            bottom: 20px;
+            top: 10px;
             left: 10px;
-            width: 90%;
-            color: yellow;
+            color: lime;
+            font-size: 12px;
             pointer-events: none;
-            z-index: 100;
-            white-space: pre-wrap;
-            background: rgba(0,0,0,0.5);
-            padding: 10px;
-            display: none; /* Hidden by default */
-        }
-        /* Custom styling for the AR button usually added by Three.js */
-        button#ARButton {
-            background-color: white !important;
-            color: black !important;
-            font-weight: bold;
-            border-radius: 20px !important;
+            z-index: 1000;
+            text-shadow: 1px 1px 1px black;
+            max-width: 80%;
         }
     </style>
 </head>
 <body>
 
-    <div id="overlay">
-        1. Click START AR<br>
-        2. Move phone slowly to detect floor<br>
-        3. Tap when you see the Circle
-    </div>
-    <div id="debug-log"></div>
+    <!-- On-screen Console for debugging -->
+    <div id="debug-console">Initializing...</div>
 
-    <!-- Import Three.js -->
+    <!-- Initial UI -->
+    <div id="overlay">
+        <h1>AR Surface Detect</h1>
+        <p>1. Chrome on Android Required</p>
+        <p>2. Move phone to detect floor</p>
+        <button id="start-btn">START CAMERA</button>
+    </div>
+
     <script type="module">
         import * as THREE from 'https://unpkg.com/three@0.160.0/build/three.module.js';
-        import { ARButton } from 'https://unpkg.com/three@0.160.0/examples/jsm/webxr/ARButton.js';
 
-        // --- Debugger Utility ---
-        const debugLog = document.getElementById('debug-log');
-        function log(message) {
-            debugLog.style.display = 'block';
-            debugLog.innerHTML += message + '<br>';
-            console.log(message);
-        }
-        
-        window.onerror = function(msg, url, lineNo, columnNo, error) {
-            log(`Error: ${msg}`);
-            return false;
-        };
-
-        // --- Main App ---
+        // Variables
         let camera, scene, renderer;
         let controller;
         let reticle;
         let hitTestSource = null;
         let hitTestSourceRequested = false;
+        let xrSession = null;
 
+        const debugDiv = document.getElementById('debug-console');
+        function log(msg) {
+            console.log(msg);
+            debugDiv.innerHTML += `<br>${msg}`;
+        }
+
+        // 1. Setup the Scene immediately
         init();
-        animate();
 
-        async function init() {
-            // Check if WebXR is supported immediately
-            if ('xr' in navigator) {
-                navigator.xr.isSessionSupported('immersive-ar').then((supported) => {
-                    if (supported) {
-                        log("System: WebXR AR is supported.");
-                    } else {
-                        log("System: WebXR exists, but 'immersive-ar' is NOT supported on this browser/device.");
-                    }
-                }).catch((err) => {
-                    log("Error checking XR support: " + err);
-                });
-            } else {
-                log("System: WebXR API is missing. Are you using HTTPS? Is this Chrome on Android?");
-            }
+        function init() {
+            log("Engine starting...");
 
             const container = document.createElement('div');
             document.body.appendChild(container);
 
             scene = new THREE.Scene();
+            // CRITICAL: No background color, otherwise it blocks the camera!
+            scene.background = null; 
 
             camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.01, 20);
 
+            // Lighting
             const light = new THREE.HemisphereLight(0xffffff, 0xbbbbff, 1);
             light.position.set(0.5, 1, 0.25);
             scene.add(light);
 
+            // Renderer
             renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
             renderer.setPixelRatio(window.devicePixelRatio);
             renderer.setSize(window.innerWidth, window.innerHeight);
-            renderer.xr.enabled = true;
+            renderer.xr.enabled = true; // Enable WebXR
             container.appendChild(renderer.domElement);
 
-            // Create the AR Button
-            // REQUIRED: 'hit-test' must be requested here
-            let arBtn = ARButton.createButton(renderer, { 
-                requiredFeatures: ['hit-test'],
-                optionalFeatures: ['dom-overlay'],
-                domOverlay: { root: document.body } 
-            });
-            document.body.appendChild(arBtn);
-
-            // Controller for Taps
+            // Handle Tap
             controller = renderer.xr.getController(0);
             controller.addEventListener('select', onSelect);
             scene.add(controller);
 
-            // The Reticle (Cursor)
-            reticle = new THREE.Mesh(
-                new THREE.RingGeometry(0.15, 0.2, 32).rotateX(-Math.PI / 2),
-                new THREE.MeshBasicMaterial()
-            );
+            // Create Reticle (The cursor)
+            const ringGeo = new THREE.RingGeometry(0.15, 0.2, 32).rotateX(-Math.PI / 2);
+            const ringMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
+            reticle = new THREE.Mesh(ringGeo, ringMat);
             reticle.matrixAutoUpdate = false;
             reticle.visible = false;
             scene.add(reticle);
 
+            // Resize listener
             window.addEventListener('resize', onWindowResize);
+
+            // Button Listener
+            document.getElementById('start-btn').addEventListener('click', startAR);
+
+            // Check Support
+            if (navigator.xr) {
+                navigator.xr.isSessionSupported('immersive-ar').then((supported) => {
+                    if(supported) log("AR Support: YES");
+                    else log("AR Support: NO (Check Browser)");
+                });
+            } else {
+                log("WebXR API missing (Are you on HTTPS?)");
+            }
+        }
+
+        // 2. Start AR Session manually
+        async function startAR() {
+            log("Requesting AR Session...");
+            document.getElementById('overlay').style.display = 'none';
+
+            if (!navigator.xr) {
+                alert("WebXR not found. Use Chrome on Android.");
+                return;
+            }
+
+            try {
+                // Request 'immersive-ar' with 'hit-test'
+                const session = await navigator.xr.requestSession('immersive-ar', {
+                    requiredFeatures: ['hit-test', 'dom-overlay'],
+                    domOverlay: { root: document.body }
+                });
+                
+                xrSession = session;
+                renderer.xr.setReferenceSpaceType('local');
+                renderer.xr.setSession(xrSession);
+                
+                log("Session Started. Move phone!");
+
+                // Render Loop
+                renderer.setAnimationLoop(render);
+
+            } catch (e) {
+                log("Failed to start AR: " + e.message);
+                document.getElementById('overlay').style.display = 'flex';
+                alert("Could not start AR. Ensure you are on HTTPS and using a supported device.");
+            }
         }
 
         function onSelect() {
             if (reticle.visible) {
-                // Create a generic flat square (Box with very low height)
-                const geometry = new THREE.BoxGeometry(0.3, 0.005, 0.3);
-                const material = new THREE.MeshPhongMaterial({ color: 0x00ff00 * Math.random() }); // Random green/blueish
+                // Create Square
+                const geometry = new THREE.BoxGeometry(0.3, 0.01, 0.3);
+                const material = new THREE.MeshPhongMaterial({ color: 0x00ff00 });
                 const mesh = new THREE.Mesh(geometry, material);
-
-                // Copy position and rotation from the reticle
+                
+                // Snap to Reticle
                 mesh.position.setFromMatrixPosition(reticle.matrix);
                 mesh.quaternion.setFromRotationMatrix(reticle.matrix);
                 
                 scene.add(mesh);
-                log("Square placed!");
+                log("Square Placed");
             }
         }
 
@@ -163,35 +193,29 @@
             renderer.setSize(window.innerWidth, window.innerHeight);
         }
 
-        function animate() {
-            renderer.setAnimationLoop(render);
-        }
-
         function render(timestamp, frame) {
             if (frame) {
                 const referenceSpace = renderer.xr.getReferenceSpace();
                 const session = renderer.xr.getSession();
 
+                // Request Hit Test Source (once)
                 if (hitTestSourceRequested === false) {
-                    session.requestReferenceSpace('viewer').then(function (referenceSpace) {
-                        session.requestHitTestSource({ space: referenceSpace }).then(function (source) {
+                    session.requestReferenceSpace('viewer').then((refSpace) => {
+                        session.requestHitTestSource({ space: refSpace }).then((source) => {
                             hitTestSource = source;
                         });
                     });
-
-                    session.addEventListener('end', function () {
+                    session.addEventListener('end', () => {
                         hitTestSourceRequested = false;
                         hitTestSource = null;
-                        document.getElementById("overlay").style.display = "block"; // Show info again when done
+                        document.getElementById('overlay').style.display = 'flex';
                     });
-
                     hitTestSourceRequested = true;
-                    document.getElementById("overlay").style.display = "none"; // Hide info during AR
                 }
 
+                // Process Hit Test
                 if (hitTestSource) {
                     const hitTestResults = frame.getHitTestResults(hitTestSource);
-
                     if (hitTestResults.length > 0) {
                         const hit = hitTestResults[0];
                         reticle.visible = true;
