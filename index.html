@@ -3,320 +3,291 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Stable AR Surface</title>
+    <title>Robust AR Surface</title>
     <style>
-        * { box-sizing: border-box; }
-        body, html {
-            margin: 0;
-            padding: 0;
-            width: 100%;
-            height: 100%;
-            background-color: #000;
-            overflow: hidden;
-            font-family: monospace;
-        }
-
-        /* 1. CAMERA FEED */
-        #camera-video {
+        body { margin: 0; overflow: hidden; background-color: #000; font-family: monospace; }
+        
+        /* 1. VIDEO FEED (Background) */
+        #camera-feed {
             position: absolute;
-            top: 50%;
-            left: 50%;
+            top: 50%; left: 50%;
             transform: translate(-50%, -50%);
-            min-width: 100%;
-            min-height: 100%;
-            width: auto;
-            height: auto;
-            z-index: 1;
+            min-width: 100%; min-height: 100%;
+            width: auto; height: auto;
+            z-index: 0;
             object-fit: cover;
         }
 
-        /* 2. 3D WORLD */
-        #ar-canvas {
+        /* 2. AR CANVAS (Overlay) */
+        #ar-overlay {
             position: absolute;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            z-index: 2;
+            top: 0; left: 0;
+            width: 100%; height: 100%;
+            z-index: 1;
             background: transparent;
-            touch-action: none;
         }
 
-        /* 3. UI */
-        #ui {
+        /* 3. UI & DEBUG */
+        #ui-layer {
             position: absolute;
-            bottom: 30px;
-            left: 0;
-            width: 100%;
+            bottom: 20px; left: 0; width: 100%;
             z-index: 10;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
+            text-align: center;
             pointer-events: none;
         }
 
-        #start-sensors {
+        #btn-start {
             pointer-events: auto;
-            background: #ff3b30;
+            background: #007AFF;
             color: white;
-            border: none;
             padding: 15px 40px;
-            font-size: 16px;
-            border-radius: 30px;
+            font-size: 18px;
+            border: none;
+            border-radius: 50px;
             font-weight: bold;
-            text-transform: uppercase;
-            box-shadow: 0 4px 15px rgba(0,0,0,0.5);
-            margin-bottom: 10px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.5);
         }
 
-        .instructions {
-            color: white;
-            text-shadow: 1px 1px 2px black;
-            font-size: 14px;
-            background: rgba(0,0,0,0.5);
-            padding: 5px 10px;
-            border-radius: 10px;
-        }
-
-        #console-log {
+        #debug {
             position: absolute;
-            top: 0;
-            left: 0;
-            width: 100%;
-            padding: 10px;
-            z-index: 20;
-            color: #00ff00;
+            top: 10px; left: 10px;
+            color: #00FF00;
+            background: rgba(0,0,0,0.6);
+            padding: 5px;
             font-size: 10px;
+            z-index: 20;
             pointer-events: none;
-            text-shadow: 1px 1px 1px black;
+            white-space: pre-wrap;
         }
     </style>
+    <!-- Three.js Core -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 </head>
 <body>
 
-    <div id="console-log">System Ready.</div>
-    <video id="camera-video" playsinline autoplay muted></video>
-    <canvas id="ar-canvas"></canvas>
-
-    <div id="ui">
-        <button id="start-sensors">ENABLE AR</button>
-        <div class="instructions">1. Tap Enable. 2. Tap floor to place square.</div>
+    <video id="camera-feed" playsinline autoplay muted></video>
+    <canvas id="ar-overlay"></canvas>
+    <div id="debug">System Ready.</div>
+    
+    <div id="ui-layer">
+        <button id="btn-start">INITIALIZE SENSORS</button>
+        <p style="color:white; font-size:12px; text-shadow:1px 1px 2px black;">Tap screen to place marker</p>
     </div>
 
     <script>
-        // --- LOGGING ---
-        const logBox = document.getElementById('console-log');
-        function log(msg) {
-            console.log(msg);
-            logBox.innerText = `> ${msg}`;
-        }
+        /**
+         * --------------------------------------------------------------------------
+         * INLINED LIBRARY: DeviceOrientationControls
+         * This algorithm handles the complex Math (Quaternions) to keep the object
+         * stable even on old devices.
+         * --------------------------------------------------------------------------
+         */
+        class DeviceOrientationControls {
+            constructor(object) {
+                this.object = object;
+                this.object.rotation.reorder('YXZ');
+                this.enabled = true;
+                this.deviceOrientation = {};
+                this.screenOrientation = 0;
+                this.alphaOffset = 0; // Initial offset to face forward
+                
+                this.onDeviceOrientationChangeEvent = (event) => { this.deviceOrientation = event; };
+                this.onScreenOrientationChangeEvent = () => { this.screenOrientation = window.orientation || 0; };
 
-        // --- SETUP ---
-        const video = document.getElementById('camera-video');
-        const canvas = document.getElementById('ar-canvas');
-        const startBtn = document.getElementById('start-sensors');
-        
-        let scene, camera, renderer;
-        let floorPlane;
-        
-        // Sensor Data
-        let deviceOrientation = { alpha: 0, beta: 0, gamma: 0 };
-        let screenOrientation = 0;
-        let isSensorActive = false;
+                window.addEventListener('deviceorientation', this.onDeviceOrientationChangeEvent, false);
+                window.addEventListener('orientationchange', this.onScreenOrientationChangeEvent, false);
+                this.onScreenOrientationChangeEvent(); // Init
+            }
 
-        // --- 1. CAMERA ---
-        async function startCamera() {
-            const constraints = {
-                audio: false,
-                video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } }
-            };
-            try {
-                const stream = await navigator.mediaDevices.getUserMedia(constraints);
-                video.srcObject = stream;
-                video.onloadedmetadata = () => video.play();
-                log("Camera active.");
-            } catch (err) {
-                log("Camera Error: " + err.message);
-                // Fallback
-                try {
-                    const s = await navigator.mediaDevices.getUserMedia({ video: true });
-                    video.srcObject = s;
-                    video.play();
-                } catch(e) {}
+            update() {
+                if (!this.enabled || !this.deviceOrientation.alpha) return;
+
+                const alpha = this.deviceOrientation.alpha ? THREE.Math.degToRad(this.deviceOrientation.alpha) + this.alphaOffset : 0;
+                const beta = this.deviceOrientation.beta ? THREE.Math.degToRad(this.deviceOrientation.beta) : 0;
+                const gamma = this.deviceOrientation.gamma ? THREE.Math.degToRad(this.deviceOrientation.gamma) : 0;
+                const orient = this.screenOrientation ? THREE.Math.degToRad(this.screenOrientation) : 0;
+
+                this.setObjectQuaternion(this.object.quaternion, alpha, beta, gamma, orient);
+            }
+
+            setObjectQuaternion(quaternion, alpha, beta, gamma, orient) {
+                // The "Magic" Mathematics to fuse sensors correctly
+                const zee = new THREE.Vector3(0, 0, 1);
+                const euler = new THREE.Euler();
+                const q0 = new THREE.Quaternion();
+                const q1 = new THREE.Quaternion(-Math.sqrt(0.5), 0, 0, Math.sqrt(0.5)); // - PI/2 around the x-axis
+
+                euler.set(beta, alpha, -gamma, 'YXZ'); // 'ZXY' for the device, but 'YXZ' for us
+                quaternion.setFromEuler(euler); // orient the device
+                quaternion.multiply(q1); // camera looks out the back of the device, not the top
+                quaternion.multiply(q0.setFromAxisAngle(zee, -orient)); // adjust for screen orientation
+            }
+            
+            dispose() {
+                window.removeEventListener('deviceorientation', this.onDeviceOrientationChangeEvent);
+                window.removeEventListener('orientationchange', this.onScreenOrientationChangeEvent);
             }
         }
 
-        // --- 2. 3D SCENE ---
+        // --------------------------------------------------------------------------
+        // MAIN APPLICATION LOGIC
+        // --------------------------------------------------------------------------
+        
+        const video = document.getElementById('camera-feed');
+        const canvas = document.getElementById('ar-overlay');
+        const debug = document.getElementById('debug');
+        const btnStart = document.getElementById('btn-start');
+
+        let scene, camera, renderer, controls;
+        let floorPlane;
+        let raycaster = new THREE.Raycaster();
+        let mouse = new THREE.Vector2();
+
+        // LOGGING
+        function log(msg) { debug.innerText += '\n' + msg; console.log(msg); }
+
+        // 1. INIT CAMERA (VIDEO)
+        async function initCamera() {
+            try {
+                // Request back camera with specific constraints for better performance on old phones
+                const stream = await navigator.mediaDevices.getUserMedia({
+                    video: { 
+                        facingMode: 'environment',
+                        width: { ideal: 640 }, // Lower res is faster on old phones
+                        height: { ideal: 480 } 
+                    },
+                    audio: false
+                });
+                video.srcObject = stream;
+                video.play();
+                log("Camera started (640x480 mode).");
+            } catch (e) {
+                log("Camera Error: " + e.message);
+                log("Ensure HTTPS is used.");
+            }
+        }
+
+        // 2. INIT THREE.JS WORLD
         function initThree() {
             scene = new THREE.Scene();
+
+            // FOV 80 is wider, better matches mobile camera lenses
+            camera = new THREE.PerspectiveCamera(80, window.innerWidth / window.innerHeight, 0.1, 1000);
             
-            // Standard Mobile FOV is usually around 75
-            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
-            
-            renderer = new THREE.WebGLRenderer({ canvas: canvas, alpha: true, antialias: true });
+            renderer = new THREE.WebGLRenderer({ canvas: canvas, alpha: true, antialias: false }); // Antialias off for performance
             renderer.setSize(window.innerWidth, window.innerHeight);
-            renderer.setPixelRatio(window.devicePixelRatio);
-            renderer.setClearColor(0x000000, 0); 
+            renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2)); // Cap pixel ratio for performance
 
-            // Lights
-            const ambient = new THREE.AmbientLight(0xffffff, 1);
-            scene.add(ambient);
-            const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
-            dirLight.position.set(0, 10, 0);
-            scene.add(dirLight);
+            // Lighting
+            const hemiLight = new THREE.HemisphereLight(0xffffff, 0x444444);
+            hemiLight.position.set(0, 20, 0);
+            scene.add(hemiLight);
 
-            // Mathematical Floor Plane (Invisible)
-            // We assume the phone is held at height 0, so the floor is at Y = -1.5m
-            // The normal is (0, 1, 0) pointing UP.
-            floorPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 1.5);
+            // THE FLOOR
+            // We create a mathematical plane at Y = -1.6 (Average eye-level to floor is 1.6 meters)
+            floorPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 1.6);
+            
+            // Helper grid (Optional: Helps visualizing the floor logic)
+            // const grid = new THREE.GridHelper(20, 20);
+            // grid.position.y = -1.6;
+            // scene.add(grid);
 
             animate();
         }
 
-        // --- 3. ROBUST ORIENTATION MATH (QUATERNIONS) ---
-        // This replaces the shaky generic math. 
-        // It converts device alpha/beta/gamma into a stable Quaternion rotation.
-        
-        function updateCameraOrientation() {
-            if (!isSensorActive) return;
-
-            const alpha = deviceOrientation.alpha ? THREE.Math.degToRad(deviceOrientation.alpha) : 0; // Z
-            const beta = deviceOrientation.beta ? THREE.Math.degToRad(deviceOrientation.beta) : 0;   // X
-            const gamma = deviceOrientation.gamma ? THREE.Math.degToRad(deviceOrientation.gamma) : 0; // Y
-            const orient = screenOrientation ? THREE.Math.degToRad(screenOrientation) : 0;
-
-            // 1. Create Quaternions for each axis
-            const q1 = new THREE.Quaternion();
-            q1.setFromAxisAngle(new THREE.Vector3(0, 0, 1), alpha); // Z (Compass)
-
-            const q2 = new THREE.Quaternion();
-            q2.setFromAxisAngle(new THREE.Vector3(1, 0, 0), beta);  // X (Tilt)
-
-            const q3 = new THREE.Quaternion();
-            q3.setFromAxisAngle(new THREE.Vector3(0, 1, 0), gamma); // Y (Roll)
-
-            // 2. Multiply rotations Z * X * Y
-            const q = new THREE.Quaternion();
-            q.copy(q1).multiply(q2).multiply(q3);
-
-            // 3. Adjust for Screen Orientation (Portrait/Landscape)
-            const q_screen = new THREE.Quaternion();
-            q_screen.setFromAxisAngle(new THREE.Vector3(0, 0, 1), -orient);
-            q.multiply(q_screen);
-
-            // 4. Adjust for "Phone Frame" vs "Camera Frame"
-            // Phones point Z-up, Cameras point Z-forward. We rotate -90 on X.
-            const q_offset = new THREE.Quaternion();
-            q_offset.setFromAxisAngle(new THREE.Vector3(1, 0, 0), -Math.PI / 2);
-            q.multiply(q_offset);
-
-            // 5. Apply to Camera
-            camera.quaternion.copy(q);
-        }
-
-        // --- EVENTS ---
-
-        // Handle Permissions
-        startBtn.addEventListener('click', () => {
+        // 3. START SENSORS (The "Algorithm")
+        btnStart.addEventListener('click', () => {
             if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') {
-                DeviceOrientationEvent.requestPermission().then(response => {
-                    if (response === 'granted') {
-                        enableSensors();
-                    } else {
-                        log("Permission Denied");
-                    }
-                }).catch(console.error);
+                DeviceOrientationEvent.requestPermission().then(res => {
+                    if (res === 'granted') startControls();
+                    else log("Sensor Permission Denied");
+                }).catch(e => log(e));
             } else {
-                enableSensors();
+                startControls();
             }
         });
 
-        function enableSensors() {
-            window.addEventListener('deviceorientation', (event) => {
-                deviceOrientation = event;
-            }, true);
+        function startControls() {
+            controls = new DeviceOrientationControls(camera);
+            btnStart.style.display = 'none';
+            log("Sensors Active. Stabilization On.");
             
-            window.addEventListener('orientationchange', () => {
-                screenOrientation = window.orientation || 0;
-            }, false);
-            screenOrientation = window.orientation || 0;
-
-            isSensorActive = true;
-            startBtn.style.display = 'none';
-            log("Sensors Active. Point at floor and Tap.");
+            // Optional: Get GPS location just to log it (User requested functionality)
+            if("geolocation" in navigator) {
+                navigator.geolocation.getCurrentPosition((pos) => {
+                    log(`GPS: ${pos.coords.latitude.toFixed(4)}, ${pos.coords.longitude.toFixed(4)}`);
+                });
+            }
         }
 
-        // --- 4. PLACEMENT LOGIC ("Cheese on Bread") ---
-        const raycaster = new THREE.Raycaster();
-        const mouse = new THREE.Vector2();
-
+        // 4. CLICK TO PLACE (The "Cheese on Bread" Logic)
         window.addEventListener('touchstart', (e) => {
-            if (!isSensorActive) return;
+            if (!controls) return;
 
-            // Normalize Touch
+            // 1. Get touch coordinates
             const t = e.changedTouches[0];
             mouse.x = (t.clientX / window.innerWidth) * 2 - 1;
             mouse.y = -(t.clientY / window.innerHeight) * 2 + 1;
 
-            // Raycast
+            // 2. Cast ray from camera
             raycaster.setFromCamera(mouse, camera);
 
-            // Find intersection with the invisible floor plane
+            // 3. Intersect with the Virtual Floor
             const target = new THREE.Vector3();
             const hit = raycaster.ray.intersectPlane(floorPlane, target);
 
             if (hit) {
-                placeSquare(target);
+                createMarker(target);
             } else {
-                log("Too high! Point closer to floor.");
+                log("Missed floor (Too high/horizon)");
             }
         }, { passive: false });
 
-        function placeSquare(position) {
-            // 1. Create Square Geometry
-            const geometry = new THREE.PlaneGeometry(0.5, 0.5); // 50cm x 50cm
-            
-            // 2. Material (Cyan, semi-transparent)
+        function createMarker(position) {
+            // Create the square
+            const geometry = new THREE.PlaneGeometry(0.5, 0.5); // 50cm square
             const material = new THREE.MeshBasicMaterial({ 
                 color: 0x00ffff, 
-                side: THREE.DoubleSide, 
-                transparent: true, 
-                opacity: 0.7 
+                side: THREE.DoubleSide,
+                opacity: 0.8,
+                transparent: true
             });
+            const mesh = new THREE.Mesh(geometry, material);
 
-            const square = new THREE.Mesh(geometry, material);
+            // STICKING LOGIC:
+            // 1. Position exactly at intersection
+            mesh.position.copy(position);
+            
+            // 2. Rotate -90deg on X to lay flat on the floor
+            mesh.rotation.x = -Math.PI / 2;
+            
+            // 3. Add to scene (World Space), NOT camera
+            scene.add(mesh);
 
-            // 3. POSITION: Stick it to the intersection point
-            square.position.copy(position);
-
-            // 4. ROTATION: "Cheese on Bread"
-            // By default, Three.js Planes stand up vertically. 
-            // We rotate -90 degrees (-PI/2) on X to lay it flat.
-            square.rotation.x = -Math.PI / 2;
-
-            // 5. Add to Scene (It will stay there while camera moves)
-            scene.add(square);
-
-            log(`Placed at X:${position.x.toFixed(1)} Z:${position.z.toFixed(1)}`);
+            log(`Square Placed: ${position.x.toFixed(1)}, ${position.z.toFixed(1)}`);
         }
 
-        // --- LOOP ---
+        // 5. RENDER LOOP
         function animate() {
             requestAnimationFrame(animate);
-            updateCameraOrientation(); // Update camera rotation every frame
+
+            if (controls) {
+                controls.update();
+            }
+
             renderer.render(scene, camera);
         }
 
-        // Start systems
-        startCamera();
-        initThree();
-
+        // Handle Resize
         window.addEventListener('resize', () => {
             camera.aspect = window.innerWidth / window.innerHeight;
             camera.updateProjectionMatrix();
             renderer.setSize(window.innerWidth, window.innerHeight);
         });
+
+        // Initialize
+        initCamera();
+        initThree();
 
     </script>
 </body>
