@@ -1,117 +1,159 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <title>AR Flat Surface Detection</title>
+    <title>AR Surface Detection</title>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
     <style>
         body {
             margin: 0;
-            background-color: #000;
+            background-color: #222;
+            font-family: monospace;
             overflow: hidden;
-            font-family: sans-serif;
         }
-        #info {
+        #overlay {
             position: absolute;
             top: 20px;
+            left: 0;
             width: 100%;
             text-align: center;
             color: white;
+            z-index: 100;
+            pointer-events: none;
+            text-shadow: 1px 1px 2px black;
+            font-size: 14px;
+        }
+        #debug-log {
+            position: absolute;
+            bottom: 20px;
+            left: 10px;
+            width: 90%;
+            color: yellow;
             pointer-events: none;
             z-index: 100;
-            text-shadow: 1px 1px 2px black;
+            white-space: pre-wrap;
+            background: rgba(0,0,0,0.5);
+            padding: 10px;
+            display: none; /* Hidden by default */
+        }
+        /* Custom styling for the AR button usually added by Three.js */
+        button#ARButton {
+            background-color: white !important;
+            color: black !important;
+            font-weight: bold;
+            border-radius: 20px !important;
         }
     </style>
 </head>
 <body>
 
-    <div id="info">
-        Point camera at floor/table.<br/>
-        Wait for circle to appear.<br/>
-        Tap to place square.
+    <div id="overlay">
+        1. Click START AR<br>
+        2. Move phone slowly to detect floor<br>
+        3. Tap when you see the Circle
     </div>
+    <div id="debug-log"></div>
 
-    <!-- Import Three.js as an ES Module -->
+    <!-- Import Three.js -->
     <script type="module">
         import * as THREE from 'https://unpkg.com/three@0.160.0/build/three.module.js';
         import { ARButton } from 'https://unpkg.com/three@0.160.0/examples/jsm/webxr/ARButton.js';
 
-        let container;
+        // --- Debugger Utility ---
+        const debugLog = document.getElementById('debug-log');
+        function log(message) {
+            debugLog.style.display = 'block';
+            debugLog.innerHTML += message + '<br>';
+            console.log(message);
+        }
+        
+        window.onerror = function(msg, url, lineNo, columnNo, error) {
+            log(`Error: ${msg}`);
+            return false;
+        };
+
+        // --- Main App ---
         let camera, scene, renderer;
         let controller;
-        
-        // This 'reticle' is the circle that tracks the floor
         let reticle;
-        
         let hitTestSource = null;
         let hitTestSourceRequested = false;
 
         init();
         animate();
 
-        function init() {
-            container = document.createElement('div');
+        async function init() {
+            // Check if WebXR is supported immediately
+            if ('xr' in navigator) {
+                navigator.xr.isSessionSupported('immersive-ar').then((supported) => {
+                    if (supported) {
+                        log("System: WebXR AR is supported.");
+                    } else {
+                        log("System: WebXR exists, but 'immersive-ar' is NOT supported on this browser/device.");
+                    }
+                }).catch((err) => {
+                    log("Error checking XR support: " + err);
+                });
+            } else {
+                log("System: WebXR API is missing. Are you using HTTPS? Is this Chrome on Android?");
+            }
+
+            const container = document.createElement('div');
             document.body.appendChild(container);
 
-            // 1. Setup Scene
             scene = new THREE.Scene();
 
-            // 2. Setup Camera
             camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.01, 20);
 
-            // 3. Setup Light
             const light = new THREE.HemisphereLight(0xffffff, 0xbbbbff, 1);
             light.position.set(0.5, 1, 0.25);
             scene.add(light);
 
-            // 4. Setup Renderer
             renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
             renderer.setPixelRatio(window.devicePixelRatio);
             renderer.setSize(window.innerWidth, window.innerHeight);
-            renderer.xr.enabled = true; // Enable WebXR
+            renderer.xr.enabled = true;
             container.appendChild(renderer.domElement);
 
-            // 5. Add AR Button
-            // The 'requiredFeatures: ["hit-test"]' is crucial for plane detection
-            document.body.appendChild(ARButton.createButton(renderer, { requiredFeatures: ['hit-test'] }));
+            // Create the AR Button
+            // REQUIRED: 'hit-test' must be requested here
+            let arBtn = ARButton.createButton(renderer, { 
+                requiredFeatures: ['hit-test'],
+                optionalFeatures: ['dom-overlay'],
+                domOverlay: { root: document.body } 
+            });
+            document.body.appendChild(arBtn);
 
-            // 6. Controller (detects taps)
+            // Controller for Taps
             controller = renderer.xr.getController(0);
             controller.addEventListener('select', onSelect);
             scene.add(controller);
 
-            // 7. Create the Reticle (The cursor)
-            // A ring that sits on the floor to show where we will click
-            const geometry = new THREE.RingGeometry(0.15, 0.2, 32).rotateX(-Math.PI / 2);
-            const material = new THREE.MeshBasicMaterial();
-            reticle = new THREE.Mesh(geometry, material);
-            
-            // We disable matrix auto updates because WebXR will control the position directly
+            // The Reticle (Cursor)
+            reticle = new THREE.Mesh(
+                new THREE.RingGeometry(0.15, 0.2, 32).rotateX(-Math.PI / 2),
+                new THREE.MeshBasicMaterial()
+            );
             reticle.matrixAutoUpdate = false;
-            reticle.visible = false; 
+            reticle.visible = false;
             scene.add(reticle);
 
-            // Handle window resize
             window.addEventListener('resize', onWindowResize);
         }
 
-        // Triggered when user taps the screen
         function onSelect() {
             if (reticle.visible) {
-                // Create the Square (Box)
-                // 0.2m x 0.01m x 0.2m (20cm width)
-                const geometry = new THREE.BoxGeometry(0.2, 0.01, 0.2); 
-                const material = new THREE.MeshPhongMaterial({ color: 0x00ff00 * Math.random() });
+                // Create a generic flat square (Box with very low height)
+                const geometry = new THREE.BoxGeometry(0.3, 0.005, 0.3);
+                const material = new THREE.MeshPhongMaterial({ color: 0x00ff00 * Math.random() }); // Random green/blueish
                 const mesh = new THREE.Mesh(geometry, material);
 
-                // Set position based on the reticle (which is tracking the floor)
-                // We use setFromMatrixPosition to copy the exact AR coordinates
+                // Copy position and rotation from the reticle
                 mesh.position.setFromMatrixPosition(reticle.matrix);
-                
-                // Set rotation to match the surface (make it lie flat)
                 mesh.quaternion.setFromRotationMatrix(reticle.matrix);
-
+                
                 scene.add(mesh);
+                log("Square placed!");
             }
         }
 
@@ -121,14 +163,12 @@
             renderer.setSize(window.innerWidth, window.innerHeight);
         }
 
-        // Render Loop
         function animate() {
             renderer.setAnimationLoop(render);
         }
 
         function render(timestamp, frame) {
             if (frame) {
-                // Check if we have a Hit Test Source (link to AR system)
                 const referenceSpace = renderer.xr.getReferenceSpace();
                 const session = renderer.xr.getSession();
 
@@ -142,31 +182,25 @@
                     session.addEventListener('end', function () {
                         hitTestSourceRequested = false;
                         hitTestSource = null;
+                        document.getElementById("overlay").style.display = "block"; // Show info again when done
                     });
 
                     hitTestSourceRequested = true;
+                    document.getElementById("overlay").style.display = "none"; // Hide info during AR
                 }
 
-                // If we have a hit test source, ask for results
                 if (hitTestSource) {
                     const hitTestResults = frame.getHitTestResults(hitTestSource);
 
                     if (hitTestResults.length > 0) {
-                        // Surface detected!
                         const hit = hitTestResults[0];
-                        
-                        // Show the reticle
                         reticle.visible = true;
-                        
-                        // Move reticle to the detected surface location/angle
                         reticle.matrix.fromArray(hit.getPose(referenceSpace).transform.matrix);
                     } else {
-                        // No surface detected
                         reticle.visible = false;
                     }
                 }
             }
-
             renderer.render(scene, camera);
         }
     </script>
