@@ -1,0 +1,544 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Hybrid Visual-Inertial AR</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #000; font-family: monospace; }
+        
+        /* 1. CAMERA */
+        #camera-feed {
+            position: absolute; top: 50%; left: 50%;
+            transform: translate(-50%, -50%);
+            min-width: 100%; min-height: 100%;
+            width: auto; height: auto;
+            z-index: 0; object-fit: cover;
+            /* High contrast helps the computer vision see texture */
+            filter: contrast(1.2) grayscale(0.2);
+        }
+
+        /* 2. AR OVERLAY */
+        #ar-overlay {
+            position: absolute; top: 0; left: 0;
+            width: 100%; height: 100%; z-index: 1;
+            background: transparent;
+        }
+
+        /* 3. VISUAL DEBUG (The "Computer Vision" Eye) */
+        #cv-debug {
+            position: absolute; top: 10px; left: 10px;
+            width: 64px; height: 64px;
+            border: 2px solid #00ff00;
+            z-index: 5;
+            background: black;
+            display: none; /* Hidden by default, shows when tracking */
+        }
+        #cv-label {
+            position: absolute; top: 76px; left: 10px;
+            color: #00ff00; font-size: 10px; display: none;
+        }
+
+        /* 4. SIZE SLIDER */
+        #slider-container {
+            position: absolute; top: 100px; right: 10px;
+            width: 30px; height: 150px; z-index: 20;
+            display: flex; align-items: center; justify-content: center;
+        }
+        input[type=range][orient=vertical] {
+            writing-mode: bt-lr; -webkit-appearance: slider-vertical;
+            width: 8px; height: 100%; padding: 0 5px;
+        }
+        #size-slider {
+            transform: rotate(-90deg); width: 150px; margin: 0;
+            background: rgba(255,255,255,0.2); border-radius: 5px; cursor: pointer;
+        }
+        #slider-label {
+            position: absolute; top: 80px; right: 15px;
+            color: #00ffff; font-size: 10px; font-weight: bold;
+            z-index: 20; pointer-events: none; text-shadow: 1px 1px 2px black;
+        }
+
+        /* 5. UI PANEL */
+        #ui-layer {
+            position: absolute; bottom: 20px; left: 0; width: 100%;
+            z-index: 10; display: flex; flex-direction: column; align-items: center;
+            pointer-events: none;
+        }
+        #panel {
+            background: rgba(0, 0, 0, 0.85); backdrop-filter: blur(8px);
+            padding: 15px 25px; border-radius: 16px; text-align: center;
+            border: 1px solid rgba(255,255,255,0.2); width: 90%; max-width: 400px;
+            pointer-events: auto; transition: all 0.2s;
+        }
+        #lbl-step { color: #00ff00; font-size: 14px; font-weight: bold; text-transform: uppercase; margin-bottom: 5px; display: block; }
+        #lbl-desc { color: #fff; font-size: 16px; margin-bottom: 15px; display: block; }
+        
+        button {
+            background: #fff; color: #000; border: none; padding: 12px 30px;
+            font-size: 16px; font-weight: 800; border-radius: 30px; cursor: pointer;
+            text-transform: uppercase; width: 100%;
+        }
+        button:active { transform: scale(0.95); background: #ccc; }
+        
+        #btn-fix { background: #FF9500; color: white; display: none; margin-top: 10px; font-size: 14px; }
+
+        /* Crosshair */
+        #crosshair {
+            position: absolute; top: 50%; left: 50%;
+            width: 24px; height: 24px; transform: translate(-50%, -50%);
+            z-index: 2; pointer-events: none;
+        }
+        #crosshair::before, #crosshair::after { content: ''; position: absolute; background: #00ff00; }
+        #crosshair::before { top: 11px; left: 0; width: 24px; height: 2px; }
+        #crosshair::after { top: 0; left: 11px; width: 2px; height: 24px; }
+
+        #dots { display: flex; gap: 8px; justify-content: center; margin-bottom: 15px; }
+        .dot { width: 8px; height: 8px; background: #444; border-radius: 50%; }
+        .dot.active { background: #00ff00; box-shadow: 0 0 5px #00ff00; }
+        
+        #debug { position: absolute; top: 5px; right: 5px; color: lime; font-size: 10px; z-index: 20; pointer-events: none; text-align: right; }
+    </style>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+</head>
+<body>
+
+    <video id="camera-feed" playsinline autoplay muted></video>
+    <canvas id="ar-overlay"></canvas>
+    
+    <div id="crosshair"></div>
+    
+    <!-- Visual Tracking Debug View -->
+    <canvas id="cv-debug" width="32" height="32"></canvas>
+    <div id="cv-label">VISUAL LOCK</div>
+
+    <div id="debug">System Ready.</div>
+    <div id="slider-label">SIZE</div>
+    <div id="slider-container">
+        <input type="range" id="size-slider" min="0.05" max="1.0" step="0.01" value="0.2">
+    </div>
+    
+    <div id="ui-layer">
+        <div id="panel">
+            <div id="dots">
+                <div class="dot" id="d1"></div>
+                <div class="dot" id="d2"></div>
+                <div class="dot" id="d3"></div>
+                <div class="dot" id="d4"></div>
+            </div>
+            <span id="lbl-step">Initialization</span>
+            <span id="lbl-desc">Tap below to start sensors.</span>
+            <button id="btn-action">START</button>
+            <button id="btn-fix">MANUAL RE-ALIGN</button>
+        </div>
+    </div>
+
+    <script>
+        // --------------------------------------------------------------------------
+        // 1. VISUAL TRACKING ENGINE (The "QR" Logic)
+        // --------------------------------------------------------------------------
+        class VisualTracker {
+            constructor(videoElement) {
+                this.video = videoElement;
+                this.isTracking = false;
+                
+                // Processing Canvas (Off-screen)
+                this.cvCanvas = document.createElement('canvas');
+                this.cvCanvas.width = 128; // Low res for speed
+                this.cvCanvas.height = 128; 
+                this.ctx = this.cvCanvas.getContext('2d', { willReadFrequently: true });
+                
+                // Debug View
+                this.debugCanvas = document.getElementById('cv-debug');
+                this.debugCtx = this.debugCanvas.getContext('2d');
+                
+                // Configuration
+                this.patchSize = 32; // Size of the "visual marker"
+                this.searchWindow = 20; // How far to look for it (pixels)
+                this.lastX = 0;
+                this.lastY = 0;
+                
+                // The Reference "Snapshot"
+                this.refData = null; 
+            }
+
+            captureSnapshot() {
+                // 1. Draw current video frame to small canvas
+                // We crop the center of the video
+                const vw = this.video.videoWidth;
+                const vh = this.video.videoHeight;
+                const cx = vw / 2;
+                const cy = vh / 2;
+                
+                // Draw center 64x64 area into our 32x32 canvas (2x downsample for speed)
+                this.ctx.drawImage(this.video, cx - 32, cy - 32, 64, 64, 0, 0, 32, 32);
+                
+                // 2. Extract Grayscale Data
+                const raw = this.ctx.getImageData(0, 0, 32, 32);
+                this.refData = this.convertToGrayscale(raw.data);
+                
+                // Show in debug UI
+                this.debugCtx.putImageData(raw, 0, 0);
+                document.getElementById('cv-debug').style.display = 'block';
+                document.getElementById('cv-label').style.display = 'block';
+                
+                this.isTracking = true;
+                console.log("Visual Snapshot Captured.");
+            }
+
+            convertToGrayscale(rgba) {
+                const gray = new Float32Array(rgba.length / 4);
+                for (let i = 0; i < gray.length; i++) {
+                    // Luminance formula
+                    gray[i] = 0.299 * rgba[i*4] + 0.587 * rgba[i*4+1] + 0.114 * rgba[i*4+2];
+                }
+                return gray;
+            }
+
+            findOffset() {
+                if (!this.isTracking || !this.refData) return { x: 0, y: 0 };
+
+                const vw = this.video.videoWidth;
+                const vh = this.video.videoHeight;
+                const cx = vw / 2;
+                const cy = vh / 2;
+                
+                // 1. Capture current "Search Area" (Larger than template)
+                // We look at 100x100 area around center, downsampled to 50x50
+                const searchSize = 50; 
+                this.ctx.drawImage(this.video, cx - 50, cy - 50, 100, 100, 0, 0, searchSize, searchSize);
+                
+                const currentRaw = this.ctx.getImageData(0, 0, searchSize, searchSize);
+                const currentGray = this.convertToGrayscale(currentRaw.data);
+
+                // 2. Template Matching (Sum of Absolute Differences - SAD)
+                // We slide the 32x32 ref over the 50x50 search area
+                let bestScore = Infinity;
+                let bestX = 0;
+                let bestY = 0;
+                
+                const maxOffset = 9; // (50 - 32) / 2
+                
+                // Fast Scan
+                for (let dy = -maxOffset; dy <= maxOffset; dy+=1) {
+                    for (let dx = -maxOffset; dx <= maxOffset; dx+=1) {
+                        
+                        let score = 0;
+                        
+                        // Compare pixels
+                        for (let r = 0; r < 32; r+=2) { // Skip every 2nd pixel for speed
+                            for (let c = 0; c < 32; c+=2) {
+                                const refVal = this.refData[r * 32 + c];
+                                
+                                // Map to search buffer coordinates
+                                const searchR = (r + 9 + dy);
+                                const searchC = (c + 9 + dx);
+                                const curVal = currentGray[searchR * 50 + searchC];
+                                
+                                score += Math.abs(refVal - curVal);
+                            }
+                        }
+
+                        if (score < bestScore) {
+                            bestScore = score;
+                            bestX = dx;
+                            bestY = dy;
+                        }
+                    }
+                }
+
+                // Threshold: If scene changed completely, don't correct
+                if (bestScore > 30000) return { x: 0, y: 0 }; 
+
+                // Return the offset (inverted, because if image moved left, camera moved right)
+                // Multiplied by 2 because of downsampling
+                return { x: bestX * 2, y: bestY * 2 };
+            }
+        }
+
+        // --------------------------------------------------------------------------
+        // 2. SENSOR FUSION (Orientation)
+        // --------------------------------------------------------------------------
+        class OrientationManager {
+            constructor(camera) {
+                this.camera = camera;
+                this.camera.rotation.reorder('YXZ');
+                this.enabled = false;
+                this.deviceOrientation = {};
+                this.screenOrientation = 0;
+                this.targetQ = new THREE.Quaternion();
+                this.euler = new THREE.Euler();
+                this.q0 = new THREE.Quaternion();
+                this.q1 = new THREE.Quaternion(-Math.sqrt(0.5), 0, 0, Math.sqrt(0.5)); 
+                this.zee = new THREE.Vector3(0, 0, 1);
+
+                window.addEventListener('deviceorientation', e => this.deviceOrientation = e);
+                window.addEventListener('orientationchange', () => this.screenOrientation = window.orientation || 0);
+                this.screenOrientation = window.orientation || 0;
+            }
+
+            update() {
+                if (!this.enabled || !this.deviceOrientation.alpha) return;
+                const alpha = THREE.Math.degToRad(this.deviceOrientation.alpha || 0);
+                const beta = THREE.Math.degToRad(this.deviceOrientation.beta || 0);
+                const gamma = THREE.Math.degToRad(this.deviceOrientation.gamma || 0);
+                const orient = THREE.Math.degToRad(this.screenOrientation);
+
+                this.euler.set(beta, alpha, -gamma, 'YXZ'); 
+                this.targetQ.setFromEuler(this.euler); 
+                this.targetQ.multiply(this.q1); 
+                this.targetQ.multiply(this.q0.setFromAxisAngle(this.zee, -orient));
+                this.camera.quaternion.slerp(this.targetQ, 0.15);
+            }
+        }
+
+        // --------------------------------------------------------------------------
+        // 3. MAIN APP
+        // --------------------------------------------------------------------------
+        const video = document.getElementById('camera-feed');
+        const canvas = document.getElementById('ar-overlay');
+        const debug = document.getElementById('debug');
+        const slider = document.getElementById('size-slider');
+        
+        // UI
+        const uiStep = document.getElementById('lbl-step');
+        const uiDesc = document.getElementById('lbl-desc');
+        const btnAction = document.getElementById('btn-action');
+        const btnFix = document.getElementById('btn-fix');
+        const dots = [document.getElementById('d1'), document.getElementById('d2'), document.getElementById('d3'), document.getElementById('d4')];
+        const uiDots = document.getElementById('dots');
+
+        let scene, camera, renderer, controls, visualTracker;
+        let worldRoot, markerMesh;
+        
+        let capturedRays = []; 
+        let stepIndex = 0; 
+        const OFFSET_CENTER = new THREE.Vector3(0, 0, 0);
+        const OFFSET_LEFT   = new THREE.Vector3(-0.4, 0, 0);
+        const OFFSET_RIGHT  = new THREE.Vector3(0.4, 0, 0);
+        const OFFSET_LOW    = new THREE.Vector3(0, -0.5, 0);
+
+        const raycaster = new THREE.Raycaster();
+        const centerScreen = new THREE.Vector2(0, 0);
+
+        // --------------------------------------------------------------------------
+        // INIT
+        // --------------------------------------------------------------------------
+        async function initCamera() {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({
+                    video: { facingMode: 'environment', width: { ideal: 320 }, height: { ideal: 240 } },
+                    audio: false
+                });
+                video.srcObject = stream;
+                video.play();
+                visualTracker = new VisualTracker(video);
+            } catch (e) { debug.innerText = "Cam Error: " + e.message; }
+        }
+
+        function initThree() {
+            scene = new THREE.Scene();
+            worldRoot = new THREE.Group();
+            scene.add(worldRoot);
+
+            camera = new THREE.PerspectiveCamera(80, window.innerWidth / window.innerHeight, 0.1, 100);
+            
+            renderer = new THREE.WebGLRenderer({ canvas: canvas, alpha: true, antialias: false, precision: 'lowp' });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(1);
+            scene.add(new THREE.AmbientLight(0xffffff, 2));
+            
+            animate();
+        }
+
+        slider.addEventListener('input', (e) => {
+            const newSize = parseFloat(e.target.value);
+            if (markerMesh) markerMesh.scale.set(newSize, newSize, 1);
+        });
+
+        // --------------------------------------------------------------------------
+        // CALIBRATION (THE MATHEMATICAL PART)
+        // --------------------------------------------------------------------------
+        btnAction.addEventListener('click', () => {
+            if (stepIndex === 0) {
+                if (typeof DeviceOrientationEvent?.requestPermission === 'function') {
+                    DeviceOrientationEvent.requestPermission().then(res => { if (res === 'granted') startCalibration(); });
+                } else {
+                    startCalibration();
+                }
+            } else {
+                captureStep();
+            }
+        });
+
+        btnFix.addEventListener('click', () => {
+            if (stepIndex !== 5) return;
+            // Manual Reset
+            raycaster.setFromCamera(centerScreen, camera);
+            const groundY = markerMesh.position.y;
+            const origin = raycaster.ray.origin;
+            const dir = raycaster.ray.direction;
+            if (Math.abs(dir.y) < 0.01) return; 
+            const t = (groundY - origin.y) / dir.y;
+            if (t < 0) return; 
+            const hitPoint = new THREE.Vector3().copy(origin).add(dir.multiplyScalar(t));
+
+            // Move Marker
+            markerMesh.position.x = hitPoint.x;
+            markerMesh.position.z = hitPoint.z;
+            
+            // Re-Take Visual Snapshot at new location
+            visualTracker.captureSnapshot();
+            
+            debug.innerText = "Re-Aligned & Snapshot Updated";
+        });
+
+        function startCalibration() {
+            controls = new OrientationManager(camera);
+            controls.enabled = true;
+            stepIndex = 1;
+            updateUI();
+        }
+
+        function updateUI() {
+            dots.forEach(d => d.classList.remove('active'));
+            if (stepIndex === 1) {
+                uiStep.innerText = "View 1: Center";
+                uiDesc.innerText = "Aim at target. Tap Capture.";
+                dots[0].classList.add('active');
+            } else if (stepIndex === 2) {
+                uiStep.innerText = "View 2: Step Left";
+                uiDesc.innerText = "Step LEFT (~40cm). Aim at SAME target.";
+                dots[1].classList.add('active');
+            } else if (stepIndex === 3) {
+                uiStep.innerText = "View 3: Step Right";
+                uiDesc.innerText = "Step RIGHT (~40cm past center). Aim at SAME target.";
+                dots[2].classList.add('active');
+            } else if (stepIndex === 4) {
+                uiStep.innerText = "View 4: Crouch";
+                uiDesc.innerText = "Crouch down (~50cm). Aim at SAME target.";
+                dots[3].classList.add('active');
+            }
+        }
+
+        function captureStep() {
+            raycaster.setFromCamera(centerScreen, camera);
+            const rawDir = raycaster.ray.direction.clone();
+            let virtualOffset = new THREE.Vector3();
+            if (stepIndex === 1) virtualOffset.copy(OFFSET_CENTER);
+            if (stepIndex === 2) virtualOffset.copy(OFFSET_LEFT);
+            if (stepIndex === 3) virtualOffset.copy(OFFSET_RIGHT);
+            if (stepIndex === 4) virtualOffset.copy(OFFSET_LOW);
+            capturedRays.push({ origin: virtualOffset, direction: rawDir });
+
+            stepIndex++;
+            if (stepIndex > 4) calculateIntersection();
+            else updateUI();
+        }
+
+        function calculateIntersection() {
+            let accumulatedPoint = new THREE.Vector3(0,0,0);
+            let count = 0;
+            for (let i = 0; i < capturedRays.length; i++) {
+                for (let j = i + 1; j < capturedRays.length; j++) {
+                    const result = closestPointBetweenRays(capturedRays[i], capturedRays[j]);
+                    if (result) { accumulatedPoint.add(result); count++; }
+                }
+            }
+            if (count > 0) accumulatedPoint.divideScalar(count);
+            else accumulatedPoint.set(0, -1.6, -2);
+
+            placeSquare(accumulatedPoint);
+            finishSetup();
+        }
+
+        function closestPointBetweenRays(r1, r2) {
+            const p1 = r1.origin; const d1 = r1.direction;
+            const p2 = r2.origin; const d2 = r2.direction;
+            const n = new THREE.Vector3().crossVectors(d1, d2);
+            const n2 = n.lengthSq();
+            if (n2 < 0.0001) return null;
+            const d12 = new THREE.Vector3().subVectors(p2, p1);
+            const t = d12.dot(new THREE.Vector3().crossVectors(d2, n)) / n2;
+            const u = d12.dot(new THREE.Vector3().crossVectors(d1, n)) / n2;
+            const pointOnRay1 = p1.clone().add(d1.clone().multiplyScalar(t));
+            const pointOnRay2 = p2.clone().add(d2.clone().multiplyScalar(u));
+            return new THREE.Vector3().addVectors(pointOnRay1, pointOnRay2).multiplyScalar(0.5);
+        }
+
+        function placeSquare(pos) {
+            const geo = new THREE.PlaneGeometry(1, 1); 
+            const mat = new THREE.MeshBasicMaterial({ 
+                color: 0x00ffff, side: THREE.DoubleSide, transparent: true, opacity: 0.8, depthTest: false 
+            });
+            markerMesh = new THREE.Mesh(geo, mat);
+            markerMesh.rotation.x = -Math.PI / 2;
+            markerMesh.renderOrder = 999;
+            markerMesh.scale.set(0.2, 0.2, 1);
+            markerMesh.position.copy(pos);
+            worldRoot.add(markerMesh);
+        }
+
+        function finishSetup() {
+            uiDots.style.display = 'none';
+            uiStep.innerText = "Tracking Active";
+            uiDesc.innerText = "Locked with Visual & Sensor Fusion.";
+            btnAction.style.display = 'none';
+            btnFix.style.display = 'block';
+            stepIndex = 5;
+            
+            // TAKE VISUAL SNAPSHOT
+            // We use the visual data from this final position as the anchor
+            if (visualTracker) visualTracker.captureSnapshot();
+        }
+
+        // --------------------------------------------------------------------------
+        // LOOP
+        // --------------------------------------------------------------------------
+        let frameCount = 0;
+        
+        function animate() {
+            requestAnimationFrame(animate);
+            if (controls) controls.update();
+            
+            // VISUAL CORRECTION LOOP (Run every 4 frames to save battery)
+            if (stepIndex === 5 && visualTracker && visualTracker.isTracking) {
+                frameCount++;
+                if (frameCount % 4 === 0) {
+                    const offset = visualTracker.findOffset();
+                    
+                    // If visual tracker says we drifted (offset.x / offset.y)
+                    // We nudge the World Root to compensate
+                    if (offset.x !== 0 || offset.y !== 0) {
+                        // Pixel to World conversion (Approximate)
+                        // 1 pixel ~= 1mm at 1m depth (very rough, but works for drift)
+                        const driftScale = 0.002; 
+                        
+                        // Apply drift correction to world container
+                        // Move world opposite to drift
+                        // X axis (Left/Right)
+                        const camRight = new THREE.Vector3(1, 0, 0).applyQuaternion(camera.quaternion);
+                        worldRoot.position.addScaledVector(camRight, -offset.x * driftScale);
+                        
+                        // Y axis (Up/Down) - mapped to Z depth mostly
+                        const camUp = new THREE.Vector3(0, 1, 0).applyQuaternion(camera.quaternion);
+                        worldRoot.position.addScaledVector(camUp, offset.y * driftScale);
+                    }
+                }
+            }
+            
+            renderer.render(scene, camera);
+        }
+
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+        initCamera();
+        initThree();
+
+    </script>
+</body>
+</html>
