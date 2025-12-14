@@ -1,0 +1,368 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Vertical Parallax AR</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #000; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+        
+        /* 1. CAMERA (Potato Mode for speed) */
+        #camera-feed {
+            position: absolute;
+            top: 50%; left: 50%;
+            transform: translate(-50%, -50%);
+            min-width: 100%; min-height: 100%;
+            width: auto; height: auto;
+            z-index: 0;
+            object-fit: cover;
+            filter: contrast(1.1); 
+        }
+
+        /* 2. OVERLAY */
+        #ar-overlay {
+            position: absolute; top: 0; left: 0;
+            width: 100%; height: 100%; z-index: 1;
+            background: transparent;
+        }
+
+        /* 3. PRECISION CROSSHAIR */
+        #crosshair {
+            position: absolute; top: 50%; left: 50%;
+            width: 40px; height: 40px;
+            transform: translate(-50%, -50%);
+            z-index: 2; pointer-events: none;
+        }
+        /* Outer Bracket */
+        #crosshair::before {
+            content: ''; position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            border: 2px solid rgba(255, 255, 255, 0.5); border-radius: 50%;
+        }
+        /* Center Dot */
+        #crosshair::after {
+            content: ''; position: absolute; top: 50%; left: 50%; width: 4px; height: 4px;
+            background: #00ff00; transform: translate(-50%, -50%); border-radius: 50%;
+            box-shadow: 0 0 4px #000;
+        }
+
+        /* 4. UI */
+        #ui-layer {
+            position: absolute; bottom: 30px; left: 0; width: 100%;
+            z-index: 10; display: flex; flex-direction: column; align-items: center;
+            pointer-events: none;
+        }
+
+        #panel {
+            background: rgba(20, 20, 20, 0.85);
+            backdrop-filter: blur(10px);
+            padding: 20px;
+            border-radius: 20px;
+            text-align: center;
+            border: 1px solid rgba(255,255,255,0.1);
+            width: 85%;
+            max-width: 350px;
+            pointer-events: auto;
+            transition: all 0.3s ease;
+        }
+
+        h2 { margin: 0 0 5px 0; color: white; font-size: 18px; }
+        p { margin: 0 0 15px 0; color: #aaa; font-size: 13px; line-height: 1.4; }
+
+        button {
+            background: #32D74B; color: black;
+            border: none; padding: 12px 24px;
+            font-size: 16px; font-weight: 700;
+            border-radius: 30px; cursor: pointer;
+            width: 100%; text-transform: uppercase;
+        }
+        button:active { transform: scale(0.96); }
+        
+        #btn-reset { 
+            background: transparent; color: #FF3B30; border: 1px solid rgba(255, 59, 48, 0.3); 
+            margin-top: 10px; padding: 8px; font-size: 12px; 
+        }
+
+        /* ANIMATION FOR INSTRUCTIONS */
+        .icon-anim {
+            width: 40px; height: 40px; margin: 0 auto 10px auto;
+            background-size: contain; background-repeat: no-repeat; background-position: center;
+        }
+        /* CSS Drawing of Standing/Crouching figures could go here, simplified to text for code size */
+
+        #debug {
+            position: absolute; top: 5px; left: 5px;
+            color: lime; font-size: 10px; z-index: 20;
+            background: rgba(0,0,0,0.5); padding: 2px;
+        }
+    </style>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+</head>
+<body>
+
+    <video id="camera-feed" playsinline autoplay muted></video>
+    <canvas id="ar-overlay"></canvas>
+    
+    <div id="crosshair"></div>
+    <div id="debug">System Ready.</div>
+    
+    <div id="ui-layer">
+        <div id="panel">
+            <div id="icon-zone" style="font-size:30px; margin-bottom:10px;">🧍</div>
+            <h2 id="lbl-title">Step 1: Stand High</h2>
+            <p id="lbl-desc">Hold phone at eye level. Aim exactly at the target on the floor.</p>
+            <button id="btn-action">CAPTURE HIGH</button>
+            <button id="btn-reset" style="display:none">RESET</button>
+        </div>
+    </div>
+
+    <script>
+        // --------------------------------------------------------------------------
+        // 1. ROBUST SENSOR CONTROL
+        // --------------------------------------------------------------------------
+        class OrientationManager {
+            constructor(camera) {
+                this.camera = camera;
+                this.camera.rotation.reorder('YXZ');
+                this.enabled = false;
+                
+                this.deviceOrientation = {};
+                this.screenOrientation = window.orientation || 0;
+                
+                // Math Caches
+                this.qTarget = new THREE.Quaternion();
+                this.euler = new THREE.Euler();
+                this.q0 = new THREE.Quaternion();
+                this.q1 = new THREE.Quaternion(-Math.sqrt(0.5), 0, 0, Math.sqrt(0.5)); 
+                this.zee = new THREE.Vector3(0, 0, 1);
+
+                window.addEventListener('deviceorientation', e => this.deviceOrientation = e);
+                window.addEventListener('orientationchange', () => this.screenOrientation = window.orientation || 0);
+            }
+
+            update() {
+                if (!this.enabled || !this.deviceOrientation.alpha) return;
+
+                const alpha = THREE.Math.degToRad(this.deviceOrientation.alpha || 0);
+                const beta = THREE.Math.degToRad(this.deviceOrientation.beta || 0);
+                const gamma = THREE.Math.degToRad(this.deviceOrientation.gamma || 0);
+                const orient = THREE.Math.degToRad(this.screenOrientation);
+
+                this.euler.set(beta, alpha, -gamma, 'YXZ'); 
+                this.qTarget.setFromEuler(this.euler); 
+                this.qTarget.multiply(this.q1); 
+                this.qTarget.multiply(this.q0.setFromAxisAngle(this.zee, -orient));
+
+                // High smoothing (0.1) prevents jitter, essential for accurate aiming
+                this.camera.quaternion.slerp(this.qTarget, 0.1);
+            }
+        }
+
+        // --------------------------------------------------------------------------
+        // 2. APP STATE
+        // --------------------------------------------------------------------------
+        const video = document.getElementById('camera-feed');
+        const canvas = document.getElementById('ar-overlay');
+        const debug = document.getElementById('debug');
+        
+        // UI Elements
+        const uiTitle = document.getElementById('lbl-title');
+        const uiDesc = document.getElementById('lbl-desc');
+        const uiIcon = document.getElementById('icon-zone');
+        const btnAction = document.getElementById('btn-action');
+        const btnReset = document.getElementById('btn-reset');
+        const uiPanel = document.getElementById('panel');
+
+        let scene, camera, renderer, controls;
+        let markerMesh;
+        
+        // CALIBRATION VARIABLES
+        let step = 0; // 0=Init, 1=High, 2=Low, 3=Done
+        let rayHigh = null; // Vector direction
+        let rayLow = null;  // Vector direction
+        
+        // CONSTANTS
+        const ASSUMED_HEIGHT_HIGH = 1.60; // Average eye level (meters)
+        const ASSUMED_HEIGHT_LOW = 0.90;  // Average waist/crouch level (meters)
+        
+        // --------------------------------------------------------------------------
+        // 3. INIT
+        // --------------------------------------------------------------------------
+        async function initCamera() {
+            try {
+                // Low res for high FPS performance
+                const stream = await navigator.mediaDevices.getUserMedia({
+                    video: { facingMode: 'environment', width: { ideal: 320 }, height: { ideal: 240 } },
+                    audio: false
+                });
+                video.srcObject = stream;
+                video.play();
+            } catch (e) { debug.innerText = "Cam Error"; }
+        }
+
+        function initThree() {
+            scene = new THREE.Scene();
+            camera = new THREE.PerspectiveCamera(80, window.innerWidth / window.innerHeight, 0.1, 100);
+            
+            renderer = new THREE.WebGLRenderer({ canvas: canvas, alpha: true, antialias: false, precision: 'lowp' });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(1);
+
+            scene.add(new THREE.AmbientLight(0xffffff, 2));
+            
+            animate();
+        }
+
+        // --------------------------------------------------------------------------
+        // 4. THE PARALLAX ALGORITHM
+        // --------------------------------------------------------------------------
+        
+        btnAction.addEventListener('click', () => {
+            if (step === 0) {
+                // Start
+                if (typeof DeviceOrientationEvent?.requestPermission === 'function') {
+                    DeviceOrientationEvent.requestPermission().then(res => { if (res === 'granted') startStep1(); });
+                } else {
+                    startStep1();
+                }
+            } else if (step === 1) {
+                captureHigh();
+            } else if (step === 2) {
+                captureLow();
+            }
+        });
+
+        btnReset.addEventListener('click', () => {
+             location.reload(); // Simple reset
+        });
+
+        function startStep1() {
+            controls = new OrientationManager(camera);
+            controls.enabled = true;
+            step = 1;
+            // UI Update
+            uiTitle.innerText = "Step 1: Stand High";
+            uiDesc.innerText = "Hold phone HIGH (Eye Level). Aim crosshair at floor target.";
+            uiIcon.innerText = "🧍";
+            btnAction.innerText = "CAPTURE HIGH ANGLE";
+        }
+
+        function captureHigh() {
+            // Capture the direction the camera is looking
+            const direction = new THREE.Vector3(0, 0, -1);
+            direction.applyQuaternion(camera.quaternion);
+            direction.normalize();
+            
+            rayHigh = direction;
+            
+            // Advance UI
+            step = 2;
+            uiTitle.innerText = "Step 2: Crouch Low";
+            uiDesc.innerText = "Drop down (Waist/Knee). Aim at the SAME spot.";
+            uiIcon.innerText = "🧎";
+            btnAction.innerText = "CAPTURE LOW ANGLE";
+        }
+
+        function captureLow() {
+            const direction = new THREE.Vector3(0, 0, -1);
+            direction.applyQuaternion(camera.quaternion);
+            direction.normalize();
+            
+            rayLow = direction;
+            
+            calculateDepth();
+        }
+
+        function calculateDepth() {
+            // --- THE MATH ---
+            // We have two rays originating from different heights (Y)
+            // Ray 1 Origin: (0, 1.6, 0) -> Direction: rayHigh
+            // Ray 2 Origin: (0, 0.9, 0) -> Direction: rayLow
+            // We want to find the Z where they intersect (or come closest).
+            
+            // Equation 1: Z = 1.6 / tan(pitch1)
+            // Equation 2: Z = 0.9 / tan(pitch2)
+            // But we use vectors directly for better 3D accuracy.
+            
+            // 1. Calculate floor intersection for High Ray (assuming Y=-1.6 relative to camera)
+            // Factor t1 = height / -y_component
+            const t1 = -ASSUMED_HEIGHT_HIGH / rayHigh.y;
+            const targetHigh = rayHigh.clone().multiplyScalar(t1); // The point on floor according to High view
+            
+            // 2. Calculate floor intersection for Low Ray (assuming Y=-0.9 relative to camera)
+            const t2 = -ASSUMED_HEIGHT_LOW / rayLow.y;
+            const targetLow = rayLow.clone().multiplyScalar(t2); // The point on floor according to Low view
+            
+            // 3. Average the X/Z positions
+            // Ideally, if the distance is correct, these points should be identical.
+            // If they are different, averaging them compensates for the parallax error.
+            
+            // Important: We place the final object relative to the STANDING position (World Root)
+            const finalX = (targetHigh.x + targetLow.x) / 2;
+            const finalZ = (targetHigh.z + targetLow.z) / 2;
+            
+            // Create the Marker
+            createMarker(new THREE.Vector3(finalX, -ASSUMED_HEIGHT_HIGH, finalZ));
+            
+            // UI Finish
+            step = 3;
+            uiPanel.style.display = 'none'; // Hide UI to enjoy AR
+            document.getElementById('btn-reset').style.display = 'block';
+            uiPanel.appendChild(document.getElementById('btn-reset'));
+            uiPanel.style.display = 'block';
+            uiTitle.innerText = "Tracking Active";
+            uiDesc.innerText = `Object locked at depth ${(Math.abs(finalZ)).toFixed(1)}m`;
+            uiIcon.innerText = "🎯";
+            btnAction.style.display = 'none';
+        }
+
+        function createMarker(pos) {
+            const geo = new THREE.PlaneGeometry(0.5, 0.5); 
+            // Cyan Grid Texture for better visualization of perspective
+            const canvasTex = document.createElement('canvas');
+            canvasTex.width = 128; canvasTex.height = 128;
+            const ctx = canvasTex.getContext('2d');
+            ctx.fillStyle = 'rgba(0,255,255,0.2)'; ctx.fillRect(0,0,128,128);
+            ctx.strokeStyle = '#00FFFF'; ctx.lineWidth = 4; ctx.strokeRect(0,0,128,128);
+            ctx.beginPath(); ctx.moveTo(0,0); ctx.lineTo(128,128); ctx.moveTo(128,0); ctx.lineTo(0,128); ctx.stroke();
+            const tex = new THREE.CanvasTexture(canvasTex);
+
+            const mat = new THREE.MeshBasicMaterial({ 
+                map: tex, side: THREE.DoubleSide, transparent: true, opacity: 0.9, depthTest: false 
+            });
+            
+            markerMesh = new THREE.Mesh(geo, mat);
+            markerMesh.rotation.x = -Math.PI / 2;
+            markerMesh.position.copy(pos);
+            markerMesh.renderOrder = 999;
+            scene.add(markerMesh);
+            
+            // Add a vertical line to visualize the anchor
+            const lineGeo = new THREE.BufferGeometry().setFromPoints([
+                new THREE.Vector3(pos.x, pos.y, pos.z),
+                new THREE.Vector3(pos.x, pos.y + 0.5, pos.z)
+            ]);
+            const line = new THREE.Line(lineGeo, new THREE.LineBasicMaterial({ color: 0x00ffff }));
+            scene.add(line);
+        }
+
+        // --------------------------------------------------------------------------
+        // 5. LOOP
+        // --------------------------------------------------------------------------
+        function animate() {
+            requestAnimationFrame(animate);
+            if (controls) controls.update();
+            renderer.render(scene, camera);
+        }
+
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+        initCamera();
+        initThree();
+
+    </script>
+</body>
+</html>
