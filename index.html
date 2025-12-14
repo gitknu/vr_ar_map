@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Smooth AR</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #000; font-family: monospace; }
+        
+        /* 1. VIDEO FEED (Scaled up to cover screen, but source is low-res) */
+        #camera-feed {
+            position: absolute;
+            top: 50%; left: 50%;
+            transform: translate(-50%, -50%);
+            min-width: 100%; min-height: 100%;
+            width: auto; height: auto;
+            z-index: 0;
+            object-fit: cover;
+            /* Filter helps hide the low-resolution pixelation */
+            filter: contrast(1.1); 
+        }
+
+        /* 2. AR CANVAS */
+        #ar-overlay {
+            position: absolute;
+            top: 0; left: 0;
+            width: 100%; height: 100%;
+            z-index: 1;
+            background: transparent;
+        }
+
+        /* 3. UI */
+        #ui-layer {
+            position: absolute;
+            bottom: 20px; left: 0; width: 100%;
+            z-index: 10;
+            text-align: center;
+            pointer-events: none;
+        }
+
+        #btn-start {
+            pointer-events: auto;
+            background: #32D74B; /* Green for speed */
+            color: black;
+            padding: 15px 40px;
+            font-size: 18px;
+            border: none;
+            border-radius: 50px;
+            font-weight: 800;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.6);
+            letter-spacing: 1px;
+        }
+
+        #debug {
+            position: absolute;
+            top: 5px; left: 5px;
+            color: #00FF00;
+            background: rgba(0,0,0,0.5);
+            padding: 4px;
+            font-size: 9px;
+            z-index: 20;
+            pointer-events: none;
+        }
+    </style>
+    <!-- Three.js Core -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+</head>
+<body>
+
+    <video id="camera-feed" playsinline autoplay muted></video>
+    <canvas id="ar-overlay"></canvas>
+    <div id="debug">System Ready.</div>
+    
+    <div id="ui-layer">
+        <button id="btn-start">START AR</button>
+    </div>
+
+    <script>
+        // --------------------------------------------------------------------------
+        // OPTIMIZED SENSOR CONTROLS (With Smoothing)
+        // --------------------------------------------------------------------------
+        class SmoothOrientationControls {
+            constructor(object) {
+                this.object = object;
+                this.object.rotation.reorder('YXZ');
+                this.enabled = true;
+                
+                // DATA CONTAINERS
+                this.deviceOrientation = {};
+                this.screenOrientation = 0;
+                
+                // MATH CACHES (Prevent Garbage Collection)
+                this.targetQuaternion = new THREE.Quaternion();
+                this.zee = new THREE.Vector3(0, 0, 1);
+                this.euler = new THREE.Euler();
+                this.q0 = new THREE.Quaternion();
+                this.q1 = new THREE.Quaternion(-Math.sqrt(0.5), 0, 0, Math.sqrt(0.5)); 
+
+                // LISTENERS
+                this.onDeviceOrientationChangeEvent = (e) => { this.deviceOrientation = e; };
+                this.onScreenOrientationChangeEvent = () => { this.screenOrientation = window.orientation || 0; };
+
+                window.addEventListener('deviceorientation', this.onDeviceOrientationChangeEvent, false);
+                window.addEventListener('orientationchange', this.onScreenOrientationChangeEvent, false);
+                this.onScreenOrientationChangeEvent(); 
+            }
+
+            update(delta) {
+                if (!this.enabled || !this.deviceOrientation.alpha) return;
+
+                // 1. Calculate the ideal target rotation based on sensors
+                const alpha = this.deviceOrientation.alpha ? THREE.Math.degToRad(this.deviceOrientation.alpha) : 0;
+                const beta = this.deviceOrientation.beta ? THREE.Math.degToRad(this.deviceOrientation.beta) : 0;
+                const gamma = this.deviceOrientation.gamma ? THREE.Math.degToRad(this.deviceOrientation.gamma) : 0;
+                const orient = this.screenOrientation ? THREE.Math.degToRad(this.screenOrientation) : 0;
+
+                this.euler.set(beta, alpha, -gamma, 'YXZ'); 
+                this.targetQuaternion.setFromEuler(this.euler); 
+                this.targetQuaternion.multiply(this.q1); 
+                this.targetQuaternion.multiply(this.q0.setFromAxisAngle(this.zee, -orient));
+
+                // 2. SMOOTHING ALGORITHM (SLERP)
+                // Instead of jumping to target, we move 15% of the way there every frame.
+                // This filters out high-frequency jitter from cheap sensors.
+                const smoothingFactor = 0.15; 
+                this.object.quaternion.slerp(this.targetQuaternion, smoothingFactor);
+            }
+        }
+
+        // --------------------------------------------------------------------------
+        // MAIN APP
+        // --------------------------------------------------------------------------
+        const video = document.getElementById('camera-feed');
+        const canvas = document.getElementById('ar-overlay');
+        const debug = document.getElementById('debug');
+        const btnStart = document.getElementById('btn-start');
+
+        let scene, camera, renderer, controls;
+        let floorPlane, markerMesh;
+        const raycaster = new THREE.Raycaster();
+        const mouse = new THREE.Vector2();
+
+        function log(msg) { debug.innerText = msg; }
+
+        // 1. LOW-RES CAMERA (Performance Hack)
+        async function initCamera() {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({
+                    video: { 
+                        facingMode: 'environment',
+                        // 320x240 is "Potato Mode". Extremely fast to process.
+                        width: { ideal: 320 }, 
+                        height: { ideal: 240 } 
+                    },
+                    audio: false
+                });
+                video.srcObject = stream;
+                video.play();
+                log("Cam: 320x240 (High FPS)");
+            } catch (e) {
+                log("Cam Error: " + e.message);
+            }
+        }
+
+        // 2. HIGH-PERFORMANCE RENDERER
+        function initThree() {
+            scene = new THREE.Scene();
+
+            camera = new THREE.PerspectiveCamera(80, window.innerWidth / window.innerHeight, 0.1, 100);
+            
+            renderer = new THREE.WebGLRenderer({ 
+                canvas: canvas, 
+                alpha: true, 
+                antialias: false, // OFF for speed
+                precision: 'lowp', // Low precision shaders for speed
+                powerPreference: 'high-performance',
+                depth: true,
+                stencil: false // Disable unnecessary buffer
+            });
+            
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(1); // Force 1:1 pixel mapping (No Retina scaling)
+
+            const light = new THREE.AmbientLight(0xffffff, 1.5); // Simple lighting
+            scene.add(light);
+
+            // Virtual Floor at -1.6m
+            floorPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 1.6);
+            
+            animate();
+        }
+
+        // 3. START
+        btnStart.addEventListener('click', () => {
+            if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') {
+                DeviceOrientationEvent.requestPermission().then(res => {
+                    if (res === 'granted') startControls();
+                });
+            } else {
+                startControls();
+            }
+        });
+
+        function startControls() {
+            controls = new SmoothOrientationControls(camera);
+            btnStart.style.display = 'none';
+            log("AR Active. Tap floor.");
+        }
+
+        // 4. EFFICIENT RAYCAST & POOLING
+        window.addEventListener('touchstart', (e) => {
+            if (!controls) return;
+
+            const t = e.changedTouches[0];
+            mouse.x = (t.clientX / window.innerWidth) * 2 - 1;
+            mouse.y = -(t.clientY / window.innerHeight) * 2 + 1;
+
+            raycaster.setFromCamera(mouse, camera);
+
+            // Re-use target vector to avoid GC
+            if (!window.hitTarget) window.hitTarget = new THREE.Vector3();
+            
+            // Raycast
+            if (raycaster.ray.intersectPlane(floorPlane, window.hitTarget)) {
+                updateMarker(window.hitTarget);
+            }
+        }, { passive: false });
+
+        function updateMarker(pos) {
+            // Lazy Initialization (Create once, reuse forever)
+            if (!markerMesh) {
+                const geo = new THREE.PlaneGeometry(0.5, 0.5); 
+                const mat = new THREE.MeshBasicMaterial({ 
+                    color: 0x00ffff, 
+                    side: THREE.DoubleSide,
+                    opacity: 0.9,
+                    transparent: true,
+                    depthWrite: false // Optimization: Don't write depth for transparent obj
+                });
+                markerMesh = new THREE.Mesh(geo, mat);
+                markerMesh.rotation.x = -Math.PI / 2;
+                markerMesh.renderOrder = 999; // Ensure it draws on top if needed
+                scene.add(markerMesh);
+            }
+            
+            markerMesh.position.copy(pos);
+            log(`Pos: ${pos.x.toFixed(1)}, ${pos.z.toFixed(1)}`);
+        }
+
+        // 5. ANIMATION LOOP
+        function animate() {
+            requestAnimationFrame(animate);
+            if (controls) controls.update();
+            renderer.render(scene, camera);
+        }
+
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+        initCamera();
+        initThree();
+
+    </script>
+</body>
+</html>
