@@ -1,0 +1,524 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Robust Hybrid AR</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #000; font-family: monospace; }
+        
+        /* 1. CAMERA */
+        #camera-feed {
+            position: absolute; top: 50%; left: 50%;
+            transform: translate(-50%, -50%);
+            min-width: 100%; min-height: 100%;
+            width: auto; height: auto;
+            z-index: 0; object-fit: cover;
+            /* Moderate contrast to help CV, but not ruin view */
+            filter: contrast(1.1);
+        }
+
+        /* 2. AR OVERLAY */
+        #ar-overlay {
+            position: absolute; top: 0; left: 0;
+            width: 100%; height: 100%; z-index: 1;
+            background: transparent;
+        }
+
+        /* 3. DEBUG INDICATOR (Visual Lock) */
+        #lock-indicator {
+            position: absolute; top: 10px; left: 10px;
+            width: 10px; height: 10px; border-radius: 50%;
+            background: red; z-index: 20;
+            border: 1px solid white;
+            box-shadow: 0 0 5px black;
+        }
+        #lock-label {
+            position: absolute; top: 8px; left: 25px;
+            color: white; font-size: 10px; z-index: 20;
+            text-shadow: 1px 1px 1px black;
+        }
+
+        /* 4. CROSSHAIR */
+        #crosshair {
+            position: absolute; top: 50%; left: 50%;
+            width: 24px; height: 24px; transform: translate(-50%, -50%);
+            z-index: 2; pointer-events: none;
+        }
+        #crosshair::before, #crosshair::after { content: ''; position: absolute; background: #00ff00; box-shadow: 0 0 2px black;}
+        #crosshair::before { top: 11px; left: 0; width: 24px; height: 2px; }
+        #crosshair::after { top: 0; left: 11px; width: 2px; height: 24px; }
+
+        /* 5. SLIDER */
+        #slider-container {
+            position: absolute; top: 100px; right: 10px;
+            width: 30px; height: 150px; z-index: 20;
+            display: flex; align-items: center; justify-content: center;
+        }
+        #size-slider {
+            transform: rotate(-90deg); width: 150px; margin: 0;
+            cursor: pointer;
+        }
+        #slider-label {
+            position: absolute; top: 80px; right: 15px;
+            color: #00ffff; font-size: 10px; font-weight: bold;
+            z-index: 20; pointer-events: none; text-shadow: 1px 1px 2px black;
+        }
+
+        /* 6. UI PANEL */
+        #ui-layer {
+            position: absolute; bottom: 20px; left: 0; width: 100%;
+            z-index: 10; display: flex; flex-direction: column; align-items: center;
+            pointer-events: none;
+        }
+        #panel {
+            background: rgba(0, 0, 0, 0.85); backdrop-filter: blur(8px);
+            padding: 15px 25px; border-radius: 16px; text-align: center;
+            border: 1px solid rgba(255,255,255,0.2); width: 90%; max-width: 400px;
+            pointer-events: auto; transition: all 0.2s;
+        }
+        #lbl-step { color: #00ff00; font-size: 14px; font-weight: bold; text-transform: uppercase; margin-bottom: 5px; display: block; }
+        #lbl-desc { color: #fff; font-size: 16px; margin-bottom: 15px; display: block; }
+        
+        button {
+            background: #fff; color: #000; border: none; padding: 12px 30px;
+            font-size: 16px; font-weight: 800; border-radius: 30px; cursor: pointer;
+            text-transform: uppercase; width: 100%;
+        }
+        button:active { transform: scale(0.95); background: #ccc; }
+        
+        #btn-fix { background: #FF9500; color: white; display: none; margin-top: 10px; font-size: 14px; }
+
+        #dots { display: flex; gap: 8px; justify-content: center; margin-bottom: 15px; }
+        .dot { width: 8px; height: 8px; background: #444; border-radius: 50%; }
+        .dot.active { background: #00ff00; box-shadow: 0 0 5px #00ff00; }
+        
+        #debug { position: absolute; top: 5px; right: 5px; color: lime; font-size: 10px; z-index: 20; pointer-events: none; text-align: right; }
+    </style>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+</head>
+<body>
+
+    <video id="camera-feed" playsinline autoplay muted></video>
+    <canvas id="ar-overlay"></canvas>
+    
+    <div id="crosshair"></div>
+    <div id="lock-indicator"></div>
+    <div id="lock-label">NO LOCK</div>
+    <div id="debug">System Ready.</div>
+
+    <div id="slider-label">SIZE</div>
+    <div id="slider-container">
+        <input type="range" id="size-slider" min="0.05" max="1.0" step="0.01" value="0.2">
+    </div>
+    
+    <div id="ui-layer">
+        <div id="panel">
+            <div id="dots">
+                <div class="dot" id="d1"></div>
+                <div class="dot" id="d2"></div>
+                <div class="dot" id="d3"></div>
+                <div class="dot" id="d4"></div>
+            </div>
+            <span id="lbl-step">Initialization</span>
+            <span id="lbl-desc">Tap below to start sensors.</span>
+            <button id="btn-action">START</button>
+            <button id="btn-fix">RE-ALIGN (Drift Fix)</button>
+        </div>
+    </div>
+
+    <script>
+        // --------------------------------------------------------------------------
+        // 1. SAFE VISUAL TRACKER (Assist Mode)
+        // --------------------------------------------------------------------------
+        class VisualTracker {
+            constructor(videoElement) {
+                this.video = videoElement;
+                this.isTracking = false;
+                
+                // Helper Canvases
+                this.cvCanvas = document.createElement('canvas');
+                this.cvCanvas.width = 64; 
+                this.cvCanvas.height = 64; 
+                this.ctx = this.cvCanvas.getContext('2d', { willReadFrequently: true });
+                
+                this.refData = null; // The "Snapshot"
+                this.validThreshold = 25.0; // Max allowed pixel difference average
+            }
+
+            captureSnapshot() {
+                const vw = this.video.videoWidth;
+                const vh = this.video.videoHeight;
+                if(vw === 0 || vh === 0) return;
+
+                // Crop center 64x64
+                this.ctx.drawImage(this.video, (vw/2)-32, (vh/2)-32, 64, 64, 0, 0, 64, 64);
+                
+                const raw = this.ctx.getImageData(0, 0, 64, 64);
+                this.refData = this.convertToGrayscale(raw.data);
+                this.isTracking = true;
+                
+                document.getElementById('lock-label').innerText = "SNAPSHOT SAVED";
+            }
+
+            convertToGrayscale(rgba) {
+                const gray = new Float32Array(rgba.length / 4);
+                for (let i = 0; i < gray.length; i++) {
+                    gray[i] = 0.299 * rgba[i*4] + 0.587 * rgba[i*4+1] + 0.114 * rgba[i*4+2];
+                }
+                return gray;
+            }
+
+            // Returns offset {x, y} AND confidence. 
+            // If confidence is false, we IGNORE the result (Safety Mechanism)
+            findOffset() {
+                if (!this.isTracking || !this.refData) return { x: 0, y: 0, confidence: false };
+
+                const vw = this.video.videoWidth;
+                const vh = this.video.videoHeight;
+                
+                // Search Window: 100x100 area
+                const searchW = 100;
+                this.ctx.drawImage(this.video, (vw/2)-(searchW/2), (vh/2)-(searchW/2), searchW, searchW, 0, 0, searchW, searchW);
+                
+                const curRaw = this.ctx.getImageData(0, 0, searchW, searchW);
+                const curGray = this.convertToGrayscale(curRaw.data);
+
+                // Template Matching
+                let bestScore = Infinity;
+                let bestX = 0;
+                let bestY = 0;
+                
+                // Search range
+                const range = (searchW - 64) / 2; // approx 18 pixels each way
+                
+                // Sparse scan (Step 2) for performance
+                for (let dy = -range; dy <= range; dy+=2) {
+                    for (let dx = -range; dx <= range; dx+=2) {
+                        let score = 0;
+                        let pixelsChecked = 0;
+
+                        // Compare 64x64 patch (Skip every 4th pixel for speed)
+                        for (let r = 0; r < 64; r+=4) {
+                            for (let c = 0; c < 64; c+=4) {
+                                const refVal = this.refData[r * 64 + c];
+                                const curVal = curGray[(r + dy + range) * searchW + (c + dx + range)];
+                                score += Math.abs(refVal - curVal);
+                                pixelsChecked++;
+                            }
+                        }
+                        
+                        // Normalize score
+                        score /= pixelsChecked;
+
+                        if (score < bestScore) {
+                            bestScore = score;
+                            bestX = dx;
+                            bestY = dy;
+                        }
+                    }
+                }
+
+                // SAFETY CHECK:
+                // If the best match still looks different (high score), 
+                // it means the floor pattern changed or blurred. IGNORE IT.
+                if (bestScore > this.validThreshold) {
+                    return { x: 0, y: 0, confidence: false, score: bestScore };
+                }
+
+                // High confidence match
+                return { x: bestX, y: bestY, confidence: true, score: bestScore };
+            }
+        }
+
+        // --------------------------------------------------------------------------
+        // 2. SENSOR FUSION
+        // --------------------------------------------------------------------------
+        class OrientationManager {
+            constructor(camera) {
+                this.camera = camera;
+                this.camera.rotation.reorder('YXZ');
+                this.enabled = false;
+                this.deviceOrientation = {};
+                this.screenOrientation = 0;
+                this.targetQ = new THREE.Quaternion();
+                this.euler = new THREE.Euler();
+                this.q0 = new THREE.Quaternion();
+                this.q1 = new THREE.Quaternion(-Math.sqrt(0.5), 0, 0, Math.sqrt(0.5)); 
+                this.zee = new THREE.Vector3(0, 0, 1);
+
+                window.addEventListener('deviceorientation', e => this.deviceOrientation = e);
+                window.addEventListener('orientationchange', () => this.screenOrientation = window.orientation || 0);
+                this.screenOrientation = window.orientation || 0;
+            }
+
+            update() {
+                if (!this.enabled || !this.deviceOrientation.alpha) return;
+                const alpha = THREE.Math.degToRad(this.deviceOrientation.alpha || 0);
+                const beta = THREE.Math.degToRad(this.deviceOrientation.beta || 0);
+                const gamma = THREE.Math.degToRad(this.deviceOrientation.gamma || 0);
+                const orient = THREE.Math.degToRad(this.screenOrientation);
+
+                this.euler.set(beta, alpha, -gamma, 'YXZ'); 
+                this.targetQ.setFromEuler(this.euler); 
+                this.targetQ.multiply(this.q1); 
+                this.targetQ.multiply(this.q0.setFromAxisAngle(this.zee, -orient));
+                
+                this.camera.quaternion.slerp(this.targetQ, 0.15);
+            }
+        }
+
+        // --------------------------------------------------------------------------
+        // 3. MAIN SETUP
+        // --------------------------------------------------------------------------
+        const video = document.getElementById('camera-feed');
+        const canvas = document.getElementById('ar-overlay');
+        const debug = document.getElementById('debug');
+        const slider = document.getElementById('size-slider');
+        const indicator = document.getElementById('lock-indicator');
+        const lockLabel = document.getElementById('lock-label');
+        
+        // UI
+        const uiStep = document.getElementById('lbl-step');
+        const uiDesc = document.getElementById('lbl-desc');
+        const btnAction = document.getElementById('btn-action');
+        const btnFix = document.getElementById('btn-fix');
+        const dots = [document.getElementById('d1'), document.getElementById('d2'), document.getElementById('d3'), document.getElementById('d4')];
+
+        let scene, camera, renderer, controls, visualTracker;
+        let worldRoot, markerMesh;
+        
+        let capturedRays = []; 
+        let stepIndex = 0; 
+        const OFFSET_CENTER = new THREE.Vector3(0, 0, 0);
+        const OFFSET_LEFT   = new THREE.Vector3(-0.4, 0, 0);
+        const OFFSET_RIGHT  = new THREE.Vector3(0.4, 0, 0);
+        const OFFSET_LOW    = new THREE.Vector3(0, -0.5, 0);
+
+        const raycaster = new THREE.Raycaster();
+        const centerScreen = new THREE.Vector2(0, 0);
+
+        // --------------------------------------------------------------------------
+        // INIT
+        // --------------------------------------------------------------------------
+        async function initCamera() {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({
+                    video: { facingMode: 'environment', width: { ideal: 320 }, height: { ideal: 240 } },
+                    audio: false
+                });
+                video.srcObject = stream;
+                video.play();
+                visualTracker = new VisualTracker(video);
+            } catch (e) { debug.innerText = "Cam Error: " + e.message; }
+        }
+
+        function initThree() {
+            scene = new THREE.Scene();
+            worldRoot = new THREE.Group();
+            scene.add(worldRoot);
+
+            camera = new THREE.PerspectiveCamera(80, window.innerWidth / window.innerHeight, 0.1, 100);
+            
+            renderer = new THREE.WebGLRenderer({ canvas: canvas, alpha: true, antialias: false, precision: 'lowp' });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(1);
+            scene.add(new THREE.AmbientLight(0xffffff, 2));
+            
+            animate();
+        }
+
+        slider.addEventListener('input', (e) => {
+            const newSize = parseFloat(e.target.value);
+            if (markerMesh) markerMesh.scale.set(newSize, newSize, 1);
+        });
+
+        // --------------------------------------------------------------------------
+        // CALIBRATION (Priority: Math First)
+        // --------------------------------------------------------------------------
+        btnAction.addEventListener('click', () => {
+            if (stepIndex === 0) {
+                if (typeof DeviceOrientationEvent?.requestPermission === 'function') {
+                    DeviceOrientationEvent.requestPermission().then(res => { if (res === 'granted') startCalibration(); });
+                } else {
+                    startCalibration();
+                }
+            } else {
+                captureStep();
+            }
+        });
+
+        btnFix.addEventListener('click', () => {
+            if (stepIndex !== 5) return;
+            raycaster.setFromCamera(centerScreen, camera);
+            const groundY = markerMesh.position.y;
+            const origin = raycaster.ray.origin;
+            const dir = raycaster.ray.direction;
+            if (Math.abs(dir.y) < 0.01) return; 
+            const t = (groundY - origin.y) / dir.y;
+            if (t < 0) return; 
+            const hitPoint = new THREE.Vector3().copy(origin).add(dir.multiplyScalar(t));
+
+            markerMesh.position.x = hitPoint.x;
+            markerMesh.position.z = hitPoint.z;
+            
+            // UPDATE VISUAL ANCHOR
+            visualTracker.captureSnapshot();
+            debug.innerText = "Position & Visuals Reset";
+        });
+
+        function startCalibration() {
+            controls = new OrientationManager(camera);
+            controls.enabled = true;
+            stepIndex = 1;
+            updateUI();
+        }
+
+        function updateUI() {
+            dots.forEach(d => d.classList.remove('active'));
+            if (stepIndex === 1) {
+                uiStep.innerText = "View 1: Center";
+                uiDesc.innerText = "Aim at target. Tap Capture.";
+                dots[0].classList.add('active');
+            } else if (stepIndex === 2) {
+                uiStep.innerText = "View 2: Step Left";
+                uiDesc.innerText = "Step LEFT (~40cm). Aim at SAME target.";
+                dots[1].classList.add('active');
+            } else if (stepIndex === 3) {
+                uiStep.innerText = "View 3: Step Right";
+                uiDesc.innerText = "Step RIGHT (~40cm past center). Aim at SAME target.";
+                dots[2].classList.add('active');
+            } else if (stepIndex === 4) {
+                uiStep.innerText = "View 4: Crouch";
+                uiDesc.innerText = "Crouch down (~50cm). Aim at SAME target.";
+                dots[3].classList.add('active');
+            }
+        }
+
+        function captureStep() {
+            raycaster.setFromCamera(centerScreen, camera);
+            const rawDir = raycaster.ray.direction.clone();
+            let virtualOffset = new THREE.Vector3();
+            if (stepIndex === 1) virtualOffset.copy(OFFSET_CENTER);
+            if (stepIndex === 2) virtualOffset.copy(OFFSET_LEFT);
+            if (stepIndex === 3) virtualOffset.copy(OFFSET_RIGHT);
+            if (stepIndex === 4) virtualOffset.copy(OFFSET_LOW);
+            capturedRays.push({ origin: virtualOffset, direction: rawDir });
+
+            stepIndex++;
+            if (stepIndex > 4) calculateIntersection();
+            else updateUI();
+        }
+
+        function calculateIntersection() {
+            let accumulatedPoint = new THREE.Vector3(0,0,0);
+            let count = 0;
+            for (let i = 0; i < capturedRays.length; i++) {
+                for (let j = i + 1; j < capturedRays.length; j++) {
+                    const result = closestPointBetweenRays(capturedRays[i], capturedRays[j]);
+                    if (result) { accumulatedPoint.add(result); count++; }
+                }
+            }
+            if (count > 0) accumulatedPoint.divideScalar(count);
+            else accumulatedPoint.set(0, -1.6, -2);
+
+            placeSquare(accumulatedPoint);
+            finishSetup();
+        }
+
+        function closestPointBetweenRays(r1, r2) {
+            const p1 = r1.origin; const d1 = r1.direction;
+            const p2 = r2.origin; const d2 = r2.direction;
+            const n = new THREE.Vector3().crossVectors(d1, d2);
+            const n2 = n.lengthSq();
+            if (n2 < 0.0001) return null;
+            const d12 = new THREE.Vector3().subVectors(p2, p1);
+            const t = d12.dot(new THREE.Vector3().crossVectors(d2, n)) / n2;
+            const u = d12.dot(new THREE.Vector3().crossVectors(d1, n)) / n2;
+            const pointOnRay1 = p1.clone().add(d1.clone().multiplyScalar(t));
+            const pointOnRay2 = p2.clone().add(d2.clone().multiplyScalar(u));
+            return new THREE.Vector3().addVectors(pointOnRay1, pointOnRay2).multiplyScalar(0.5);
+        }
+
+        function placeSquare(pos) {
+            const geo = new THREE.PlaneGeometry(1, 1); 
+            const mat = new THREE.MeshBasicMaterial({ 
+                color: 0x00ffff, side: THREE.DoubleSide, transparent: true, opacity: 0.8, depthTest: false 
+            });
+            markerMesh = new THREE.Mesh(geo, mat);
+            markerMesh.rotation.x = -Math.PI / 2;
+            markerMesh.renderOrder = 999;
+            markerMesh.scale.set(0.2, 0.2, 1); // Default size 20cm
+            markerMesh.position.copy(pos);
+            worldRoot.add(markerMesh);
+        }
+
+        function finishSetup() {
+            uiDots.style.display = 'none';
+            uiStep.innerText = "Tracking Active";
+            uiDesc.innerText = "Visual + Inertial Lock.";
+            btnAction.style.display = 'none';
+            btnFix.style.display = 'block';
+            stepIndex = 5;
+            
+            // TAKE INITIAL SNAPSHOT
+            if (visualTracker) visualTracker.captureSnapshot();
+        }
+
+        // --------------------------------------------------------------------------
+        // LOOP (Hybrid)
+        // --------------------------------------------------------------------------
+        let frameCount = 0;
+        
+        function animate() {
+            requestAnimationFrame(animate);
+            if (controls) controls.update();
+            
+            // HYBRID CORRECTION (Every 10 frames)
+            if (stepIndex === 5 && visualTracker) {
+                frameCount++;
+                if (frameCount % 10 === 0) {
+                    // 1. Get Offset
+                    const result = visualTracker.findOffset();
+                    
+                    if (result.confidence) {
+                        // VISUAL LOCK FOUND
+                        indicator.style.backgroundColor = '#00ff00'; // Green
+                        lockLabel.innerText = "VISUAL LOCK";
+
+                        // 2. Apply Gentle Correction (Drift Scale)
+                        // This assumes small errors. If visual tracker says "Move 10px Left",
+                        // We move the world very slightly to match.
+                        const scale = 0.001; 
+
+                        // Correction relative to camera view
+                        const camRight = new THREE.Vector3(1, 0, 0).applyQuaternion(camera.quaternion);
+                        const camUp = new THREE.Vector3(0, 1, 0).applyQuaternion(camera.quaternion);
+
+                        // Negative offset.x moves opposite to image shift
+                        worldRoot.position.addScaledVector(camRight, -result.x * scale);
+                        worldRoot.position.addScaledVector(camUp, result.y * scale);
+                    } else {
+                        // VISUAL LOCK LOST (Too fast, too blurry, or dark)
+                        // Fallback to pure Sensor/Math (Do not apply bad offsets)
+                        indicator.style.backgroundColor = 'red';
+                        lockLabel.innerText = "INERTIAL ONLY";
+                    }
+                }
+            }
+            
+            renderer.render(scene, camera);
+        }
+
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+        initCamera();
+        initThree();
+
+    </script>
+</body>
+</html>
