@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Fast AR Surface</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #000; font-family: monospace; }
+        
+        /* 1. VIDEO FEED (Background) */
+        #camera-feed {
+            position: absolute;
+            top: 50%; left: 50%;
+            transform: translate(-50%, -50%);
+            min-width: 100%; min-height: 100%;
+            width: auto; height: auto;
+            z-index: 0;
+            object-fit: cover;
+        }
+
+        /* 2. AR CANVAS (Overlay) */
+        #ar-overlay {
+            position: absolute;
+            top: 0; left: 0;
+            width: 100%; height: 100%;
+            z-index: 1;
+            background: transparent;
+        }
+
+        /* 3. UI & DEBUG */
+        #ui-layer {
+            position: absolute;
+            bottom: 20px; left: 0; width: 100%;
+            z-index: 10;
+            text-align: center;
+            pointer-events: none;
+        }
+
+        #btn-start {
+            pointer-events: auto;
+            background: #007AFF;
+            color: white;
+            padding: 15px 40px;
+            font-size: 18px;
+            border: none;
+            border-radius: 50px;
+            font-weight: bold;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+        }
+
+        #debug {
+            position: absolute;
+            top: 10px; left: 10px;
+            color: #00FF00;
+            background: rgba(0,0,0,0.6);
+            padding: 5px;
+            font-size: 10px;
+            z-index: 20;
+            pointer-events: none;
+            white-space: pre-wrap;
+        }
+    </style>
+    <!-- Three.js Core -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+</head>
+<body>
+
+    <video id="camera-feed" playsinline autoplay muted></video>
+    <canvas id="ar-overlay"></canvas>
+    <div id="debug">System Ready.</div>
+    
+    <div id="ui-layer">
+        <button id="btn-start">INITIALIZE SENSORS</button>
+        <p style="color:white; font-size:12px; text-shadow:1px 1px 2px black;">Tap to move the square</p>
+    </div>
+
+    <script>
+        /**
+         * --------------------------------------------------------------------------
+         * INLINED LIBRARY: DeviceOrientationControls (Optimized)
+         * --------------------------------------------------------------------------
+         */
+        class DeviceOrientationControls {
+            constructor(object) {
+                this.object = object;
+                this.object.rotation.reorder('YXZ');
+                this.enabled = true;
+                this.deviceOrientation = {};
+                this.screenOrientation = 0;
+                this.alphaOffset = 0; 
+                
+                this.onDeviceOrientationChangeEvent = (event) => { this.deviceOrientation = event; };
+                this.onScreenOrientationChangeEvent = () => { this.screenOrientation = window.orientation || 0; };
+
+                window.addEventListener('deviceorientation', this.onDeviceOrientationChangeEvent, false);
+                window.addEventListener('orientationchange', this.onScreenOrientationChangeEvent, false);
+                this.onScreenOrientationChangeEvent(); 
+            }
+
+            update() {
+                if (!this.enabled || !this.deviceOrientation.alpha) return;
+
+                const alpha = this.deviceOrientation.alpha ? THREE.Math.degToRad(this.deviceOrientation.alpha) + this.alphaOffset : 0;
+                const beta = this.deviceOrientation.beta ? THREE.Math.degToRad(this.deviceOrientation.beta) : 0;
+                const gamma = this.deviceOrientation.gamma ? THREE.Math.degToRad(this.deviceOrientation.gamma) : 0;
+                const orient = this.screenOrientation ? THREE.Math.degToRad(this.screenOrientation) : 0;
+
+                this.setObjectQuaternion(this.object.quaternion, alpha, beta, gamma, orient);
+            }
+
+            setObjectQuaternion(quaternion, alpha, beta, gamma, orient) {
+                const zee = new THREE.Vector3(0, 0, 1);
+                const euler = new THREE.Euler();
+                const q0 = new THREE.Quaternion();
+                const q1 = new THREE.Quaternion(-Math.sqrt(0.5), 0, 0, Math.sqrt(0.5)); 
+
+                euler.set(beta, alpha, -gamma, 'YXZ'); 
+                quaternion.setFromEuler(euler); 
+                quaternion.multiply(q1); 
+                quaternion.multiply(q0.setFromAxisAngle(zee, -orient)); 
+            }
+        }
+
+        // --------------------------------------------------------------------------
+        // MAIN APPLICATION
+        // --------------------------------------------------------------------------
+        
+        const video = document.getElementById('camera-feed');
+        const canvas = document.getElementById('ar-overlay');
+        const debug = document.getElementById('debug');
+        const btnStart = document.getElementById('btn-start');
+
+        let scene, camera, renderer, controls;
+        let floorPlane;
+        let raycaster = new THREE.Raycaster();
+        let mouse = new THREE.Vector2();
+
+        // THE SINGLE SQUARE INSTANCE
+        let markerMesh = null; 
+
+        function log(msg) { debug.innerText += '\n' + msg; console.log(msg); }
+
+        // 1. INIT CAMERA
+        async function initCamera() {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({
+                    video: { 
+                        facingMode: 'environment',
+                        width: { ideal: 640 }, 
+                        height: { ideal: 480 } 
+                    },
+                    audio: false
+                });
+                video.srcObject = stream;
+                video.play();
+                log("Camera: 640x480 (Fast Mode)");
+            } catch (e) {
+                log("Camera Error: Check HTTPS.");
+            }
+        }
+
+        // 2. INIT THREE.JS
+        function initThree() {
+            scene = new THREE.Scene();
+
+            camera = new THREE.PerspectiveCamera(80, window.innerWidth / window.innerHeight, 0.1, 1000);
+            
+            renderer = new THREE.WebGLRenderer({ canvas: canvas, alpha: true, antialias: false });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2)); 
+
+            const hemiLight = new THREE.HemisphereLight(0xffffff, 0x444444);
+            hemiLight.position.set(0, 20, 0);
+            scene.add(hemiLight);
+
+            // Virtual Floor at -1.6m height
+            floorPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 1.6);
+            
+            animate();
+        }
+
+        // 3. START SENSORS
+        btnStart.addEventListener('click', () => {
+            if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') {
+                DeviceOrientationEvent.requestPermission().then(res => {
+                    if (res === 'granted') startControls();
+                    else log("Permission Denied");
+                });
+            } else {
+                startControls();
+            }
+        });
+
+        function startControls() {
+            controls = new DeviceOrientationControls(camera);
+            btnStart.style.display = 'none';
+            log("Sensors Active.");
+        }
+
+        // 4. CLICK TO PLACE (SINGLE SQUARE LOGIC)
+        window.addEventListener('touchstart', (e) => {
+            if (!controls) return;
+
+            const t = e.changedTouches[0];
+            mouse.x = (t.clientX / window.innerWidth) * 2 - 1;
+            mouse.y = -(t.clientY / window.innerHeight) * 2 + 1;
+
+            raycaster.setFromCamera(mouse, camera);
+
+            const target = new THREE.Vector3();
+            const hit = raycaster.ray.intersectPlane(floorPlane, target);
+
+            if (hit) {
+                placeOrMoveMarker(target);
+            }
+        }, { passive: false });
+
+        function placeOrMoveMarker(position) {
+            // OPTIMIZATION: Check if marker already exists
+            if (!markerMesh) {
+                // Create it for the first time
+                const geometry = new THREE.PlaneGeometry(0.5, 0.5); 
+                const material = new THREE.MeshBasicMaterial({ 
+                    color: 0x00ffff, 
+                    side: THREE.DoubleSide,
+                    opacity: 0.8,
+                    transparent: true
+                });
+                markerMesh = new THREE.Mesh(geometry, material);
+                
+                // Rotate flat ("Cheese on Bread")
+                markerMesh.rotation.x = -Math.PI / 2;
+                
+                scene.add(markerMesh);
+                log("Square Created.");
+            }
+            
+            // Just update position (Zero memory allocation = Fast)
+            markerMesh.position.copy(position);
+            
+            // Log coordinates to verify it moved
+            debug.innerText = `Pos: X ${position.x.toFixed(1)} | Z ${position.z.toFixed(1)}`;
+        }
+
+        // 5. RENDER LOOP
+        function animate() {
+            requestAnimationFrame(animate);
+            if (controls) controls.update();
+            renderer.render(scene, camera);
+        }
+
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+        initCamera();
+        initThree();
+
+    </script>
+</body>
+</html>index.html
