@@ -1,232 +1,194 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <title>AR Plane Detection</title>
-    <meta charset="utf-8">
+    <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>AR Flat Surface Detector</title>
+    
+    <!-- Import Google's Model Viewer Component -->
+    <script type="module" src="https://ajax.googleapis.com/ajax/libs/model-viewer/3.3.0/model-viewer.min.js"></script>
+
     <style>
-        body {
+        /* 1. Basic Reset */
+        body, html {
             margin: 0;
-            background-color: #333; /* Dark gray before AR starts */
-            font-family: sans-serif;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            background-color: #000;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
             overflow: hidden;
         }
-        
-        /* The overlay UI */
-        #overlay {
+
+        /* 2. The AR Container */
+        #ar-container {
+            width: 100%;
+            height: 100%;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            position: relative;
+        }
+
+        /* 3. Model Viewer Styling (Hidden until activated) */
+        model-viewer {
+            width: 100%;
+            height: 100%;
+            --poster-color: transparent;
+        }
+
+        /* 4. The Overlay UI */
+        #ui-layer {
             position: absolute;
-            top: 0; left: 0; width: 100%; height: 100%;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 10;
             display: flex;
             flex-direction: column;
             justify-content: center;
             align-items: center;
-            z-index: 999;
-            background: rgba(0,0,0,0.8);
+            background: linear-gradient(135deg, #1a2a6c, #b21f1f, #fdbb2d); 
+            transition: opacity 0.5s ease;
+        }
+
+        #ui-layer.hidden {
+            opacity: 0;
+            pointer-events: none;
+        }
+
+        h1 {
             color: white;
+            font-size: 24px;
+            margin-bottom: 20px;
+            text-shadow: 0 2px 4px rgba(0,0,0,0.5);
             text-align: center;
         }
 
-        /* Giant Start Button */
-        #start-btn {
-            padding: 20px 40px;
-            font-size: 20px;
-            background: #2196F3;
+        /* 5. The generic "Start AR" Button */
+        .ar-button {
+            padding: 15px 30px;
+            font-size: 18px;
+            font-weight: bold;
             color: white;
-            border: none;
-            border-radius: 8px;
-            margin-top: 20px;
+            background-color: rgba(255, 255, 255, 0.2);
+            border: 2px solid white;
+            border-radius: 30px;
             cursor: pointer;
+            backdrop-filter: blur(10px);
+            box-shadow: 0 4px 15px rgba(0,0,0,0.3);
+            transition: transform 0.2s, background-color 0.2s;
         }
 
-        #debug-console {
+        .ar-button:active {
+            transform: scale(0.95);
+            background-color: rgba(255, 255, 255, 0.4);
+        }
+
+        /* 6. Instructions Overlay (Visible inside AR) */
+        #ar-instructions {
             position: absolute;
-            top: 10px;
-            left: 10px;
-            color: lime;
-            font-size: 12px;
+            bottom: 30px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: rgba(0,0,0,0.6);
+            color: white;
+            padding: 10px 20px;
+            border-radius: 20px;
+            font-size: 14px;
             pointer-events: none;
-            z-index: 1000;
-            text-shadow: 1px 1px 1px black;
-            max-width: 80%;
+            display: none; /* Hidden by default */
+            z-index: 999;
         }
     </style>
 </head>
 <body>
 
-    <!-- On-screen Console for debugging -->
-    <div id="debug-console">Initializing...</div>
+    <div id="ar-container">
+        <!-- 
+           MODEL VIEWER CONFIGURATION 
+           - src: A simple cube model (we will flatten it to look like a square).
+           - ar: Enables AR.
+           - ar-modes: Tries WebXR (Android), then SceneViewer, then QuickLook (iOS).
+           - ar-placement: "floor" forces plane detection.
+           - ar-scale: "fixed" keeps the square a specific size (doesn't scale with zoom).
+           - scale: "1 0.05 1" flattens the cube into a tile/square.
+        -->
+        <model-viewer 
+            id="viewer"
+            src="https://modelviewer.dev/shared-assets/models/glTF-Sample-Models/2.0/Box/glTF-Binary/Box.glb"
+            ios-src="https://modelviewer.dev/shared-assets/models/glTF-Sample-Models/2.0/Box/glTF-Binary/Box.usdz"
+            alt="A flat surface detector square"
+            ar
+            ar-modes="webxr scene-viewer quick-look"
+            camera-controls
+            ar-placement="floor"
+            shadow-intensity="1"
+            scale="1 0.05 1" 
+            ar-scale="fixed"
+        >
+            <!-- Slot for AR Button (we use a custom one) -->
+            <button slot="ar-button" style="display:none"></button>
+        </model-viewer>
 
-    <!-- Initial UI -->
-    <div id="overlay">
-        <h1>AR Surface Detect</h1>
-        <p>1. Chrome on Android Required</p>
-        <p>2. Move phone to detect floor</p>
-        <button id="start-btn">START CAMERA</button>
+        <!-- Initial Start Screen -->
+        <div id="ui-layer">
+            <h1>Surface Detector</h1>
+            <button class="ar-button" id="start-btn">Start Camera</button>
+            <p style="color: rgba(255,255,255,0.7); margin-top: 15px; font-size: 12px;">
+                Point at floor to detect surface
+            </p>
+        </div>
+
+        <!-- In-AR Instructions -->
+        <div id="ar-instructions">Tap on the floor to place the square</div>
     </div>
 
-    <script type="module">
-        import * as THREE from 'https://unpkg.com/three@0.160.0/build/three.module.js';
+    <script>
+        document.addEventListener("DOMContentLoaded", () => {
+            const viewer = document.querySelector("#viewer");
+            const startBtn = document.querySelector("#start-btn");
+            const uiLayer = document.querySelector("#ui-layer");
+            const instructions = document.querySelector("#ar-instructions");
 
-        // Variables
-        let camera, scene, renderer;
-        let controller;
-        let reticle;
-        let hitTestSource = null;
-        let hitTestSourceRequested = false;
-        let xrSession = null;
-
-        const debugDiv = document.getElementById('debug-console');
-        function log(msg) {
-            console.log(msg);
-            debugDiv.innerHTML += `<br>${msg}`;
-        }
-
-        // 1. Setup the Scene immediately
-        init();
-
-        function init() {
-            log("Engine starting...");
-
-            const container = document.createElement('div');
-            document.body.appendChild(container);
-
-            scene = new THREE.Scene();
-            // CRITICAL: No background color, otherwise it blocks the camera!
-            scene.background = null; 
-
-            camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.01, 20);
-
-            // Lighting
-            const light = new THREE.HemisphereLight(0xffffff, 0xbbbbff, 1);
-            light.position.set(0.5, 1, 0.25);
-            scene.add(light);
-
-            // Renderer
-            renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
-            renderer.setPixelRatio(window.devicePixelRatio);
-            renderer.setSize(window.innerWidth, window.innerHeight);
-            renderer.xr.enabled = true; // Enable WebXR
-            container.appendChild(renderer.domElement);
-
-            // Handle Tap
-            controller = renderer.xr.getController(0);
-            controller.addEventListener('select', onSelect);
-            scene.add(controller);
-
-            // Create Reticle (The cursor)
-            const ringGeo = new THREE.RingGeometry(0.15, 0.2, 32).rotateX(-Math.PI / 2);
-            const ringMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
-            reticle = new THREE.Mesh(ringGeo, ringMat);
-            reticle.matrixAutoUpdate = false;
-            reticle.visible = false;
-            scene.add(reticle);
-
-            // Resize listener
-            window.addEventListener('resize', onWindowResize);
-
-            // Button Listener
-            document.getElementById('start-btn').addEventListener('click', startAR);
-
-            // Check Support
-            if (navigator.xr) {
-                navigator.xr.isSessionSupported('immersive-ar').then((supported) => {
-                    if(supported) log("AR Support: YES");
-                    else log("AR Support: NO (Check Browser)");
-                });
-            } else {
-                log("WebXR API missing (Are you on HTTPS?)");
-            }
-        }
-
-        // 2. Start AR Session manually
-        async function startAR() {
-            log("Requesting AR Session...");
-            document.getElementById('overlay').style.display = 'none';
-
-            if (!navigator.xr) {
-                alert("WebXR not found. Use Chrome on Android.");
-                return;
-            }
-
-            try {
-                // Request 'immersive-ar' with 'hit-test'
-                const session = await navigator.xr.requestSession('immersive-ar', {
-                    requiredFeatures: ['hit-test', 'dom-overlay'],
-                    domOverlay: { root: document.body }
-                });
-                
-                xrSession = session;
-                renderer.xr.setReferenceSpaceType('local');
-                renderer.xr.setSession(xrSession);
-                
-                log("Session Started. Move phone!");
-
-                // Render Loop
-                renderer.setAnimationLoop(render);
-
-            } catch (e) {
-                log("Failed to start AR: " + e.message);
-                document.getElementById('overlay').style.display = 'flex';
-                alert("Could not start AR. Ensure you are on HTTPS and using a supported device.");
-            }
-        }
-
-        function onSelect() {
-            if (reticle.visible) {
-                // Create Square
-                const geometry = new THREE.BoxGeometry(0.3, 0.01, 0.3);
-                const material = new THREE.MeshPhongMaterial({ color: 0x00ff00 });
-                const mesh = new THREE.Mesh(geometry, material);
-                
-                // Snap to Reticle
-                mesh.position.setFromMatrixPosition(reticle.matrix);
-                mesh.quaternion.setFromRotationMatrix(reticle.matrix);
-                
-                scene.add(mesh);
-                log("Square Placed");
-            }
-        }
-
-        function onWindowResize() {
-            camera.aspect = window.innerWidth / window.innerHeight;
-            camera.updateProjectionMatrix();
-            renderer.setSize(window.innerWidth, window.innerHeight);
-        }
-
-        function render(timestamp, frame) {
-            if (frame) {
-                const referenceSpace = renderer.xr.getReferenceSpace();
-                const session = renderer.xr.getSession();
-
-                // Request Hit Test Source (once)
-                if (hitTestSourceRequested === false) {
-                    session.requestReferenceSpace('viewer').then((refSpace) => {
-                        session.requestHitTestSource({ space: refSpace }).then((source) => {
-                            hitTestSource = source;
-                        });
-                    });
-                    session.addEventListener('end', () => {
-                        hitTestSourceRequested = false;
-                        hitTestSource = null;
-                        document.getElementById('overlay').style.display = 'flex';
-                    });
-                    hitTestSourceRequested = true;
+            // 1. Activate AR on button click
+            // Browsers require a user gesture (click) to start the camera/AR session.
+            startBtn.addEventListener('click', () => {
+                // Attempt to activate AR
+                if (viewer.canActivateAR) {
+                    viewer.activateAR();
+                    uiLayer.classList.add('hidden');
+                    instructions.style.display = 'block';
+                } else {
+                    alert("AR is not supported on this device/browser combination.");
                 }
+            });
 
-                // Process Hit Test
-                if (hitTestSource) {
-                    const hitTestResults = frame.getHitTestResults(hitTestSource);
-                    if (hitTestResults.length > 0) {
-                        const hit = hitTestResults[0];
-                        reticle.visible = true;
-                        reticle.matrix.fromArray(hit.getPose(referenceSpace).transform.matrix);
-                    } else {
-                        reticle.visible = false;
-                    }
+            // 2. Listen for AR session status
+            // When AR starts, we want to ensure the square is ready.
+            viewer.addEventListener('ar-status', (event) => {
+                if(event.detail.status === 'session-started') {
+                    uiLayer.classList.add('hidden');
+                    instructions.style.display = 'block';
+                    instructions.textContent = "Move phone to detect floor...";
+                } else if(event.detail.status === 'not-presenting') {
+                    // User exited AR
+                    uiLayer.classList.remove('hidden');
+                    instructions.style.display = 'none';
                 }
-            }
-            renderer.render(scene, camera);
-        }
+            });
+
+            // 3. Optional: Material tinting
+            // We can color the box to look like a "holographic" square
+            viewer.addEventListener("load", () => {
+                const material = viewer.model.materials[0];
+                // Set color to a semi-transparent cyan
+                material.pbrMetallicRoughness.setBaseColorFactor([0, 1, 1, 0.8]); 
+                material.setAlphaMode('BLEND');
+            });
+        });
     </script>
 </body>
 </html>
