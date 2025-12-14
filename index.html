@@ -1,0 +1,408 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Parallax AR</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #000; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+        
+        /* 1. CAMERA FEED (Optimized) */
+        #camera-feed {
+            position: absolute;
+            top: 50%; left: 50%;
+            transform: translate(-50%, -50%);
+            min-width: 100%; min-height: 100%;
+            width: auto; height: auto;
+            z-index: 0;
+            object-fit: cover;
+            filter: contrast(1.1) brightness(1.1); 
+        }
+
+        /* 2. AR CANVAS */
+        #ar-overlay {
+            position: absolute;
+            top: 0; left: 0;
+            width: 100%; height: 100%;
+            z-index: 1;
+            background: transparent;
+        }
+
+        /* 3. CROSSHAIR */
+        #crosshair {
+            position: absolute;
+            top: 50%; left: 50%;
+            width: 30px; height: 30px;
+            transform: translate(-50%, -50%);
+            z-index: 2;
+            pointer-events: none;
+        }
+        #crosshair::before, #crosshair::after {
+            content: ''; position: absolute; background: #00ff00; box-shadow: 0 0 4px #000;
+        }
+        #crosshair::before { top: 14px; left: 0; width: 30px; height: 2px; }
+        #crosshair::after { top: 0; left: 14px; width: 2px; height: 30px; }
+        /* Central dot for precision */
+        #crosshair-dot {
+            position: absolute; top: 50%; left: 50%; width: 4px; height: 4px; 
+            background: #fff; transform: translate(-50%, -50%); border-radius: 50%;
+        }
+
+        /* 4. UI LAYER */
+        #ui-layer {
+            position: absolute;
+            bottom: 30px; left: 0; width: 100%;
+            z-index: 10;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 15px;
+            pointer-events: none;
+        }
+
+        .btn {
+            pointer-events: auto;
+            padding: 16px 32px;
+            font-size: 16px;
+            border: none;
+            border-radius: 50px;
+            font-weight: 800;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.6);
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            transition: transform 0.1s;
+        }
+        .btn:active { transform: scale(0.95); }
+
+        #btn-action { background: #32D74B; color: black; min-width: 220px; }
+        #btn-reset { background: #FF3B30; color: white; display: none; padding: 10px 20px; font-size: 12px; margin-top: 5px; }
+
+        /* INSTRUCTIONS */
+        #status-box {
+            background: rgba(0, 0, 0, 0.8);
+            backdrop-filter: blur(8px);
+            padding: 15px 25px;
+            border-radius: 18px;
+            text-align: center;
+            border: 1px solid rgba(255,255,255,0.15);
+            max-width: 80%;
+        }
+        #main-text { color: white; font-size: 16px; font-weight: 700; display: block; margin-bottom: 6px; }
+        #sub-text { color: #ccc; font-size: 12px; display: block; line-height: 1.4;}
+
+        /* STEP INDICATORS */
+        #steps {
+            display: flex; gap: 8px; margin-top: 8px; justify-content: center;
+        }
+        .step { width: 30px; height: 4px; background: #444; border-radius: 2px; }
+        .step.active { background: #00ff00; box-shadow: 0 0 6px #00ff00; }
+
+        #debug {
+            position: absolute; top: 5px; left: 5px;
+            color: #00FF00; background: rgba(0,0,0,0.5);
+            padding: 4px; font-size: 9px; z-index: 20; pointer-events: none;
+        }
+    </style>
+    <!-- Three.js -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+</head>
+<body>
+
+    <video id="camera-feed" playsinline autoplay muted></video>
+    <canvas id="ar-overlay"></canvas>
+    
+    <div id="crosshair"><div id="crosshair-dot"></div></div>
+    <div id="debug">System Ready.</div>
+    
+    <div id="ui-layer">
+        <div id="status-box">
+            <span id="main-text">Start Calibration</span>
+            <span id="sub-text">We need 3 angles to calculate depth.</span>
+            <div id="steps">
+                <div class="step" id="s1"></div>
+                <div class="step" id="s2"></div>
+                <div class="step" id="s3"></div>
+            </div>
+        </div>
+        
+        <button id="btn-action" class="btn">START</button>
+        <button id="btn-reset" class="btn">RESET / RE-CALIBRATE</button>
+    </div>
+
+    <script>
+        // --------------------------------------------------------------------------
+        // 1. SENSOR LOGIC (Smoothed)
+        // --------------------------------------------------------------------------
+        class SmoothOrientationControls {
+            constructor(object) {
+                this.object = object;
+                this.object.rotation.reorder('YXZ');
+                this.enabled = false;
+                this.deviceOrientation = {};
+                this.screenOrientation = 0;
+                
+                this.targetQuaternion = new THREE.Quaternion();
+                this.euler = new THREE.Euler();
+                this.q0 = new THREE.Quaternion();
+                this.q1 = new THREE.Quaternion(-Math.sqrt(0.5), 0, 0, Math.sqrt(0.5)); 
+                this.zee = new THREE.Vector3(0, 0, 1);
+
+                window.addEventListener('deviceorientation', e => this.deviceOrientation = e, false);
+                window.addEventListener('orientationchange', () => this.screenOrientation = window.orientation || 0, false);
+                this.screenOrientation = window.orientation || 0;
+            }
+
+            update() {
+                if (!this.enabled || !this.deviceOrientation.alpha) return;
+
+                const alpha = this.deviceOrientation.alpha ? THREE.Math.degToRad(this.deviceOrientation.alpha) : 0;
+                const beta = this.deviceOrientation.beta ? THREE.Math.degToRad(this.deviceOrientation.beta) : 0;
+                const gamma = this.deviceOrientation.gamma ? THREE.Math.degToRad(this.deviceOrientation.gamma) : 0;
+                const orient = this.screenOrientation ? THREE.Math.degToRad(this.screenOrientation) : 0;
+
+                this.euler.set(beta, alpha, -gamma, 'YXZ'); 
+                this.targetQuaternion.setFromEuler(this.euler); 
+                this.targetQuaternion.multiply(this.q1); 
+                this.targetQuaternion.multiply(this.q0.setFromAxisAngle(this.zee, -orient));
+
+                this.object.quaternion.slerp(this.targetQuaternion, 0.15);
+            }
+        }
+
+        // --------------------------------------------------------------------------
+        // 2. STATE & CONFIG
+        // --------------------------------------------------------------------------
+        const video = document.getElementById('camera-feed');
+        const canvas = document.getElementById('ar-overlay');
+        const btnAction = document.getElementById('btn-action');
+        const btnReset = document.getElementById('btn-reset');
+        const mainText = document.getElementById('main-text');
+        const subText = document.getElementById('sub-text');
+        const debug = document.getElementById('debug');
+        const stepIndicators = [document.getElementById('s1'), document.getElementById('s2'), document.getElementById('s3')];
+
+        let scene, camera, renderer, controls;
+        let floorPlane;
+        let markerMesh = null;
+        
+        let appState = 'INIT'; // INIT -> STEP1 -> STEP2 -> STEP3 -> TRACKING
+        
+        // PARALLAX DATA
+        // We will store the vectors from 3 different "Assumed" positions
+        let calibrationData = []; 
+        const centerScreen = new THREE.Vector2(0, 0); 
+        const raycaster = new THREE.Raycaster();
+
+        // --------------------------------------------------------------------------
+        // 3. SETUP
+        // --------------------------------------------------------------------------
+        async function initCamera() {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({
+                    video: { facingMode: 'environment', width: { ideal: 320 }, height: { ideal: 240 } },
+                    audio: false
+                });
+                video.srcObject = stream;
+                video.play();
+            } catch (e) { debug.innerText = "Cam Error: " + e.message; }
+        }
+
+        function initThree() {
+            scene = new THREE.Scene();
+
+            camera = new THREE.PerspectiveCamera(80, window.innerWidth / window.innerHeight, 0.1, 100);
+            
+            renderer = new THREE.WebGLRenderer({ 
+                canvas: canvas, alpha: true, antialias: false, 
+                precision: 'lowp', powerPreference: 'high-performance' 
+            });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(1); 
+
+            scene.add(new THREE.AmbientLight(0xffffff, 2));
+
+            // Default Floor (-1.6m). We will try to correct X/Z, but keep Y fixed for simplicity on old phones
+            floorPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 1.6);
+            
+            animate();
+        }
+
+        // --------------------------------------------------------------------------
+        // 4. CORE LOGIC
+        // --------------------------------------------------------------------------
+        
+        btnAction.addEventListener('click', () => {
+            if (appState === 'INIT') {
+                if (typeof DeviceOrientationEvent?.requestPermission === 'function') {
+                    DeviceOrientationEvent.requestPermission().then(res => {
+                        if (res === 'granted') nextStep();
+                    });
+                } else {
+                    nextStep();
+                }
+            } else {
+                captureAndAdvance();
+            }
+        });
+
+        btnReset.addEventListener('click', () => {
+            appState = 'INIT';
+            calibrationData = [];
+            if(markerMesh) markerMesh.visible = false;
+            btnReset.style.display = 'none';
+            btnAction.style.display = 'block';
+            stepIndicators.forEach(s => s.classList.remove('active'));
+            
+            controls.enabled = false; // Reset sensors to prevent drift buildup
+            nextStep(); // Restart immediately
+        });
+
+        function nextStep() {
+            if (appState === 'INIT') {
+                appState = 'STEP1';
+                controls = new SmoothOrientationControls(camera);
+                controls.enabled = true;
+                
+                mainText.innerText = "Step 1: Center";
+                subText.innerText = "Stand still. Aim at the floor target. Tap Capture.";
+                stepIndicators[0].classList.add('active');
+                btnAction.innerText = "CAPTURE VIEW 1";
+            }
+        }
+
+        function captureAndAdvance() {
+            // 1. CAPTURE DATA
+            // We record the ray, but we APPLY A VIRTUAL OFFSET based on instructions
+            
+            // Standard ray from current camera rotation
+            raycaster.setFromCamera(centerScreen, camera);
+            
+            let virtualOffset = new THREE.Vector3(0,0,0);
+            
+            if (appState === 'STEP1') {
+                // Center Position (0,0,0)
+                virtualOffset.set(0, 0, 0);
+                
+                // Advance UI
+                appState = 'STEP2';
+                mainText.innerText = "Step 2: Move Left";
+                subText.innerText = "Take 1 step LEFT. Aim at the SAME spot.";
+                stepIndicators[1].classList.add('active');
+                btnAction.innerText = "CAPTURE VIEW 2";
+                
+            } else if (appState === 'STEP2') {
+                // Virtual Position: We PRETEND the camera moved 0.5m Left (-X)
+                // This creates the math for triangulation
+                virtualOffset.set(-0.5, 0, 0); 
+                
+                // Advance UI
+                appState = 'STEP3';
+                mainText.innerText = "Step 3: Move Right";
+                subText.innerText = "Take 2 steps RIGHT (past center). Aim at SAME spot.";
+                stepIndicators[2].classList.add('active');
+                btnAction.innerText = "CAPTURE VIEW 3";
+                
+            } else if (appState === 'STEP3') {
+                // Virtual Position: We PRETEND camera is 0.5m Right (+X)
+                virtualOffset.set(0.5, 0, 0);
+                
+                // Finish
+                appState = 'TRACKING';
+            }
+
+            // Calculate the Intersection from this VIRTUAL position
+            // We essentially shift the ray origin by the virtual offset
+            // Ray Origin = (0,0,0) + VirtualOffset
+            const virtualRayOrigin = raycaster.ray.origin.clone().add(virtualOffset);
+            const virtualRayDirection = raycaster.ray.direction.clone();
+            
+            // Create a temp raycaster for math
+            const tempRay = new THREE.Ray(virtualRayOrigin, virtualRayDirection);
+            
+            const target = new THREE.Vector3();
+            // Intersect with floor
+            if (tempRay.intersectPlane(floorPlane, target)) {
+                calibrationData.push(target);
+                debug.innerText = `Captured Point ${calibrationData.length}: ${target.x.toFixed(2)}, ${target.z.toFixed(2)}`;
+            } else {
+                debug.innerText = "Capture Failed: Aim at floor!";
+                return; // Don't advance if missed
+            }
+
+            if (appState === 'TRACKING') {
+                calculateFinalPosition();
+            }
+        }
+
+        function calculateFinalPosition() {
+            // TRIANGULATION LOGIC
+            // We have 3 points on the floor calculated from 3 virtual perspectives.
+            // If the user actually moved as requested, the average of these 3 points 
+            // accounts for the parallax error.
+            
+            let avgX = 0;
+            let avgZ = 0;
+            
+            // Simple Centroid
+            calibrationData.forEach(p => {
+                avgX += p.x;
+                avgZ += p.z;
+            });
+            
+            avgX /= calibrationData.length;
+            avgZ /= calibrationData.length;
+            
+            const finalPos = new THREE.Vector3(avgX, -1.6, avgZ);
+            
+            placeSquare(finalPos);
+            
+            // Update UI
+            mainText.innerText = "Tracking Active";
+            subText.innerText = "Square locked via parallax triangulation.";
+            btnAction.style.display = 'none';
+            btnReset.style.display = 'block';
+        }
+
+        function placeSquare(pos) {
+            if (!markerMesh) {
+                const geo = new THREE.PlaneGeometry(0.5, 0.5); 
+                const mat = new THREE.MeshBasicMaterial({ 
+                    color: 0x00ffff, 
+                    side: THREE.DoubleSide, 
+                    transparent: true, 
+                    opacity: 0.8,
+                    depthTest: false // Always show on top to prevent clipping issues
+                });
+                markerMesh = new THREE.Mesh(geo, mat);
+                markerMesh.rotation.x = -Math.PI / 2;
+                markerMesh.renderOrder = 999;
+                scene.add(markerMesh);
+            }
+            
+            markerMesh.visible = true;
+            markerMesh.position.copy(pos);
+            
+            debug.innerText = `Final Pos: X${pos.x.toFixed(2)} Z${pos.z.toFixed(2)}`;
+        }
+
+        // --------------------------------------------------------------------------
+        // 5. LOOP
+        // --------------------------------------------------------------------------
+        function animate() {
+            requestAnimationFrame(animate);
+            if (controls) controls.update();
+            renderer.render(scene, camera);
+        }
+
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+        initCamera();
+        initThree();
+
+    </script>
+</body>
+</html>
