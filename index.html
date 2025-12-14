@@ -3,96 +3,82 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Vertical Parallax AR</title>
+    <title>Precision Triangulation AR</title>
     <style>
-        body { margin: 0; overflow: hidden; background-color: #000; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+        body { margin: 0; overflow: hidden; background-color: #000; font-family: monospace; }
         
-        /* 1. CAMERA (Potato Mode for speed) */
+        /* 1. CAMERA (Optimized for FPS) */
         #camera-feed {
-            position: absolute;
-            top: 50%; left: 50%;
+            position: absolute; top: 50%; left: 50%;
             transform: translate(-50%, -50%);
             min-width: 100%; min-height: 100%;
             width: auto; height: auto;
-            z-index: 0;
-            object-fit: cover;
-            filter: contrast(1.1); 
+            z-index: 0; object-fit: cover;
+            filter: contrast(1.1);
         }
 
-        /* 2. OVERLAY */
+        /* 2. AR OVERLAY */
         #ar-overlay {
             position: absolute; top: 0; left: 0;
             width: 100%; height: 100%; z-index: 1;
             background: transparent;
         }
 
-        /* 3. PRECISION CROSSHAIR */
+        /* 3. CROSSHAIR */
         #crosshair {
             position: absolute; top: 50%; left: 50%;
-            width: 40px; height: 40px;
+            width: 24px; height: 24px;
             transform: translate(-50%, -50%);
             z-index: 2; pointer-events: none;
         }
-        /* Outer Bracket */
-        #crosshair::before {
-            content: ''; position: absolute; top: 0; left: 0; width: 100%; height: 100%;
-            border: 2px solid rgba(255, 255, 255, 0.5); border-radius: 50%;
+        #crosshair::before, #crosshair::after {
+            content: ''; position: absolute; background: #00ff00; box-shadow: 0 0 3px #000;
         }
-        /* Center Dot */
-        #crosshair::after {
-            content: ''; position: absolute; top: 50%; left: 50%; width: 4px; height: 4px;
-            background: #00ff00; transform: translate(-50%, -50%); border-radius: 50%;
-            box-shadow: 0 0 4px #000;
-        }
+        #crosshair::before { top: 11px; left: 0; width: 24px; height: 2px; }
+        #crosshair::after { top: 0; left: 11px; width: 2px; height: 24px; }
 
-        /* 4. UI */
+        /* 4. UI PANEL */
         #ui-layer {
-            position: absolute; bottom: 30px; left: 0; width: 100%;
+            position: absolute; bottom: 20px; left: 0; width: 100%;
             z-index: 10; display: flex; flex-direction: column; align-items: center;
             pointer-events: none;
         }
 
         #panel {
-            background: rgba(20, 20, 20, 0.85);
-            backdrop-filter: blur(10px);
-            padding: 20px;
-            border-radius: 20px;
+            background: rgba(0, 0, 0, 0.85);
+            backdrop-filter: blur(8px);
+            padding: 15px 25px;
+            border-radius: 16px;
             text-align: center;
-            border: 1px solid rgba(255,255,255,0.1);
-            width: 85%;
-            max-width: 350px;
+            border: 1px solid rgba(255,255,255,0.2);
+            width: 90%; max-width: 400px;
             pointer-events: auto;
-            transition: all 0.3s ease;
+            transition: all 0.2s;
         }
 
-        h2 { margin: 0 0 5px 0; color: white; font-size: 18px; }
-        p { margin: 0 0 15px 0; color: #aaa; font-size: 13px; line-height: 1.4; }
-
-        button {
-            background: #32D74B; color: black;
-            border: none; padding: 12px 24px;
-            font-size: 16px; font-weight: 700;
-            border-radius: 30px; cursor: pointer;
-            width: 100%; text-transform: uppercase;
-        }
-        button:active { transform: scale(0.96); }
+        #lbl-step { color: #00ff00; font-size: 14px; font-weight: bold; text-transform: uppercase; margin-bottom: 5px; display: block; }
+        #lbl-desc { color: #fff; font-size: 16px; margin-bottom: 15px; display: block; }
         
-        #btn-reset { 
-            background: transparent; color: #FF3B30; border: 1px solid rgba(255, 59, 48, 0.3); 
-            margin-top: 10px; padding: 8px; font-size: 12px; 
+        button {
+            background: #fff; color: #000; border: none; padding: 12px 30px;
+            font-size: 16px; font-weight: 800; border-radius: 30px; cursor: pointer;
+            text-transform: uppercase; width: 100%;
+        }
+        button:active { transform: scale(0.95); background: #ccc; }
+
+        #btn-fix {
+            background: #FF9500; color: white; display: none; margin-top: 10px; font-size: 14px;
         }
 
-        /* ANIMATION FOR INSTRUCTIONS */
-        .icon-anim {
-            width: 40px; height: 40px; margin: 0 auto 10px auto;
-            background-size: contain; background-repeat: no-repeat; background-position: center;
-        }
-        /* CSS Drawing of Standing/Crouching figures could go here, simplified to text for code size */
+        /* Progress Dots */
+        #dots { display: flex; gap: 8px; justify-content: center; margin-bottom: 15px; }
+        .dot { width: 8px; height: 8px; background: #444; border-radius: 50%; }
+        .dot.active { background: #00ff00; box-shadow: 0 0 5px #00ff00; }
 
         #debug {
             position: absolute; top: 5px; left: 5px;
             color: lime; font-size: 10px; z-index: 20;
-            background: rgba(0,0,0,0.5); padding: 2px;
+            background: rgba(0,0,0,0.5); padding: 4px; pointer-events: none;
         }
     </style>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
@@ -107,29 +93,33 @@
     
     <div id="ui-layer">
         <div id="panel">
-            <div id="icon-zone" style="font-size:30px; margin-bottom:10px;">🧍</div>
-            <h2 id="lbl-title">Step 1: Stand High</h2>
-            <p id="lbl-desc">Hold phone at eye level. Aim exactly at the target on the floor.</p>
-            <button id="btn-action">CAPTURE HIGH</button>
-            <button id="btn-reset" style="display:none">RESET</button>
+            <div id="dots">
+                <div class="dot" id="d1"></div>
+                <div class="dot" id="d2"></div>
+                <div class="dot" id="d3"></div>
+                <div class="dot" id="d4"></div>
+            </div>
+            <span id="lbl-step">Initialization</span>
+            <span id="lbl-desc">Tap below to start sensors.</span>
+            <button id="btn-action">START</button>
+            <button id="btn-fix">RE-ALIGN (Drift Fix)</button>
         </div>
     </div>
 
     <script>
         // --------------------------------------------------------------------------
-        // 1. ROBUST SENSOR CONTROL
+        // 1. ADVANCED SENSOR FUSION (SLERP Smoothing)
         // --------------------------------------------------------------------------
         class OrientationManager {
             constructor(camera) {
                 this.camera = camera;
                 this.camera.rotation.reorder('YXZ');
                 this.enabled = false;
-                
                 this.deviceOrientation = {};
-                this.screenOrientation = window.orientation || 0;
+                this.screenOrientation = 0;
                 
                 // Math Caches
-                this.qTarget = new THREE.Quaternion();
+                this.targetQ = new THREE.Quaternion();
                 this.euler = new THREE.Euler();
                 this.q0 = new THREE.Quaternion();
                 this.q1 = new THREE.Quaternion(-Math.sqrt(0.5), 0, 0, Math.sqrt(0.5)); 
@@ -137,6 +127,7 @@
 
                 window.addEventListener('deviceorientation', e => this.deviceOrientation = e);
                 window.addEventListener('orientationchange', () => this.screenOrientation = window.orientation || 0);
+                this.screenOrientation = window.orientation || 0;
             }
 
             update() {
@@ -148,59 +139,67 @@
                 const orient = THREE.Math.degToRad(this.screenOrientation);
 
                 this.euler.set(beta, alpha, -gamma, 'YXZ'); 
-                this.qTarget.setFromEuler(this.euler); 
-                this.qTarget.multiply(this.q1); 
-                this.qTarget.multiply(this.q0.setFromAxisAngle(this.zee, -orient));
+                this.targetQ.setFromEuler(this.euler); 
+                this.targetQ.multiply(this.q1); 
+                this.targetQ.multiply(this.q0.setFromAxisAngle(this.zee, -orient));
 
-                // High smoothing (0.1) prevents jitter, essential for accurate aiming
-                this.camera.quaternion.slerp(this.qTarget, 0.1);
+                // 0.15 smoothing factor = Butter smooth but responsive
+                this.camera.quaternion.slerp(this.targetQ, 0.15);
             }
         }
 
         // --------------------------------------------------------------------------
-        // 2. APP STATE
+        // 2. STATE MANAGEMENT
         // --------------------------------------------------------------------------
         const video = document.getElementById('camera-feed');
         const canvas = document.getElementById('ar-overlay');
         const debug = document.getElementById('debug');
         
-        // UI Elements
-        const uiTitle = document.getElementById('lbl-title');
+        const uiStep = document.getElementById('lbl-step');
         const uiDesc = document.getElementById('lbl-desc');
-        const uiIcon = document.getElementById('icon-zone');
         const btnAction = document.getElementById('btn-action');
-        const btnReset = document.getElementById('btn-reset');
-        const uiPanel = document.getElementById('panel');
+        const btnFix = document.getElementById('btn-fix');
+        const dots = [document.getElementById('d1'), document.getElementById('d2'), document.getElementById('d3'), document.getElementById('d4')];
+        const uiDots = document.getElementById('dots');
 
         let scene, camera, renderer, controls;
-        let markerMesh;
+        let worldRoot, markerMesh;
         
-        // CALIBRATION VARIABLES
-        let step = 0; // 0=Init, 1=High, 2=Low, 3=Done
-        let rayHigh = null; // Vector direction
-        let rayLow = null;  // Vector direction
-        
-        // CONSTANTS
-        const ASSUMED_HEIGHT_HIGH = 1.60; // Average eye level (meters)
-        const ASSUMED_HEIGHT_LOW = 0.90;  // Average waist/crouch level (meters)
-        
+        // Calibration Data Storage
+        // We store rays: { origin: Vector3, direction: Vector3 }
+        let capturedRays = []; 
+        let stepIndex = 0; // 0=Init, 1=Center, 2=Left, 3=Right, 4=Low
+
+        // Virtual Camera Offsets (Meters)
+        const OFFSET_CENTER = new THREE.Vector3(0, 0, 0);
+        const OFFSET_LEFT   = new THREE.Vector3(-0.4, 0, 0);  // 40cm Left
+        const OFFSET_RIGHT  = new THREE.Vector3(0.4, 0, 0);   // 40cm Right
+        const OFFSET_LOW    = new THREE.Vector3(0, -0.5, 0);  // 50cm Down (Crouch)
+
+        const raycaster = new THREE.Raycaster();
+        const centerScreen = new THREE.Vector2(0, 0);
+
         // --------------------------------------------------------------------------
-        // 3. INIT
+        // 3. INITIALIZATION
         // --------------------------------------------------------------------------
         async function initCamera() {
             try {
-                // Low res for high FPS performance
                 const stream = await navigator.mediaDevices.getUserMedia({
                     video: { facingMode: 'environment', width: { ideal: 320 }, height: { ideal: 240 } },
                     audio: false
                 });
                 video.srcObject = stream;
                 video.play();
-            } catch (e) { debug.innerText = "Cam Error"; }
+            } catch (e) { debug.innerText = "Cam Error: " + e.message; }
         }
 
         function initThree() {
             scene = new THREE.Scene();
+            
+            // "WorldRoot" allows us to shift the entire universe to fix drift
+            worldRoot = new THREE.Group();
+            scene.add(worldRoot);
+
             camera = new THREE.PerspectiveCamera(80, window.innerWidth / window.innerHeight, 0.1, 100);
             
             renderer = new THREE.WebGLRenderer({ canvas: canvas, alpha: true, antialias: false, precision: 'lowp' });
@@ -213,140 +212,218 @@
         }
 
         // --------------------------------------------------------------------------
-        // 4. THE PARALLAX ALGORITHM
+        // 4. INTERACTION LOGIC
         // --------------------------------------------------------------------------
         
         btnAction.addEventListener('click', () => {
-            if (step === 0) {
-                // Start
+            if (stepIndex === 0) {
+                // Request Permission First
                 if (typeof DeviceOrientationEvent?.requestPermission === 'function') {
-                    DeviceOrientationEvent.requestPermission().then(res => { if (res === 'granted') startStep1(); });
+                    DeviceOrientationEvent.requestPermission().then(res => { if (res === 'granted') startCalibration(); });
                 } else {
-                    startStep1();
+                    startCalibration();
                 }
-            } else if (step === 1) {
-                captureHigh();
-            } else if (step === 2) {
-                captureLow();
+            } else {
+                captureStep();
             }
         });
 
-        btnReset.addEventListener('click', () => {
-             location.reload(); // Simple reset
+        // Drift Fix Button (Runtime Correction)
+        btnFix.addEventListener('click', () => {
+            if (stepIndex !== 5) return; // Only active after calibration
+
+            // 1. Raycast where user is looking NOW
+            raycaster.setFromCamera(centerScreen, camera);
+            
+            // 2. Calculate where that ray hits our calculated "Virtual Floor"
+            // We use the Y of the marker we placed as the ground truth height
+            const groundY = markerMesh.position.y;
+            
+            // Math: Find intersection of Ray and Horizontal Plane at y = groundY
+            // Ray: P = Origin + t * Dir
+            // P.y = Origin.y + t * Dir.y  =>  groundY = Origin.y + t * Dir.y
+            // t = (groundY - Origin.y) / Dir.y
+            
+            const origin = raycaster.ray.origin;
+            const dir = raycaster.ray.direction;
+            
+            if (Math.abs(dir.y) < 0.01) return; // Looking at horizon, ignore
+
+            const t = (groundY - origin.y) / dir.y;
+            if (t < 0) return; // Behind camera
+
+            const hitPoint = new THREE.Vector3().copy(origin).add(dir.multiplyScalar(t));
+
+            // 3. Move the marker to this new spot (or shift world)
+            // Ideally shift world, but shifting marker is safer logic for simple drift
+            markerMesh.position.x = hitPoint.x;
+            markerMesh.position.z = hitPoint.z;
+            
+            // Visual Flash
+            markerMesh.material.color.setHex(0xFFFFFF);
+            setTimeout(() => markerMesh.material.color.setHex(0x00FFFF), 150);
+            
+            debug.innerText = "Re-aligned to crosshair.";
         });
 
-        function startStep1() {
+        function startCalibration() {
             controls = new OrientationManager(camera);
             controls.enabled = true;
-            step = 1;
-            // UI Update
-            uiTitle.innerText = "Step 1: Stand High";
-            uiDesc.innerText = "Hold phone HIGH (Eye Level). Aim crosshair at floor target.";
-            uiIcon.innerText = "🧍";
-            btnAction.innerText = "CAPTURE HIGH ANGLE";
+            stepIndex = 1;
+            updateUI();
         }
 
-        function captureHigh() {
-            // Capture the direction the camera is looking
-            const direction = new THREE.Vector3(0, 0, -1);
-            direction.applyQuaternion(camera.quaternion);
-            direction.normalize();
+        function updateUI() {
+            dots.forEach(d => d.classList.remove('active'));
             
-            rayHigh = direction;
-            
-            // Advance UI
-            step = 2;
-            uiTitle.innerText = "Step 2: Crouch Low";
-            uiDesc.innerText = "Drop down (Waist/Knee). Aim at the SAME spot.";
-            uiIcon.innerText = "🧎";
-            btnAction.innerText = "CAPTURE LOW ANGLE";
+            if (stepIndex === 1) {
+                uiStep.innerText = "View 1: Center";
+                uiDesc.innerText = "Stand normal. Aim at target. Tap Capture.";
+                dots[0].classList.add('active');
+            } else if (stepIndex === 2) {
+                uiStep.innerText = "View 2: Step Left";
+                uiDesc.innerText = "Step LEFT (~40cm). Aim at SAME target.";
+                dots[1].classList.add('active');
+            } else if (stepIndex === 3) {
+                uiStep.innerText = "View 3: Step Right";
+                uiDesc.innerText = "Step RIGHT (~40cm past center). Aim at SAME target.";
+                dots[2].classList.add('active');
+            } else if (stepIndex === 4) {
+                uiStep.innerText = "View 4: Crouch/Low";
+                uiDesc.innerText = "Crouch down (~50cm). Aim at SAME target.";
+                dots[3].classList.add('active');
+            }
         }
 
-        function captureLow() {
-            const direction = new THREE.Vector3(0, 0, -1);
-            direction.applyQuaternion(camera.quaternion);
-            direction.normalize();
-            
-            rayLow = direction;
-            
-            calculateDepth();
-        }
+        function captureStep() {
+            // 1. Get Camera Direction
+            raycaster.setFromCamera(centerScreen, camera);
+            const rawOrigin = new THREE.Vector3(0,0,0); // Camera is always 0,0,0 in local space
+            const rawDir = raycaster.ray.direction.clone();
 
-        function calculateDepth() {
-            // --- THE MATH ---
-            // We have two rays originating from different heights (Y)
-            // Ray 1 Origin: (0, 1.6, 0) -> Direction: rayHigh
-            // Ray 2 Origin: (0, 0.9, 0) -> Direction: rayLow
-            // We want to find the Z where they intersect (or come closest).
-            
-            // Equation 1: Z = 1.6 / tan(pitch1)
-            // Equation 2: Z = 0.9 / tan(pitch2)
-            // But we use vectors directly for better 3D accuracy.
-            
-            // 1. Calculate floor intersection for High Ray (assuming Y=-1.6 relative to camera)
-            // Factor t1 = height / -y_component
-            const t1 = -ASSUMED_HEIGHT_HIGH / rayHigh.y;
-            const targetHigh = rayHigh.clone().multiplyScalar(t1); // The point on floor according to High view
-            
-            // 2. Calculate floor intersection for Low Ray (assuming Y=-0.9 relative to camera)
-            const t2 = -ASSUMED_HEIGHT_LOW / rayLow.y;
-            const targetLow = rayLow.clone().multiplyScalar(t2); // The point on floor according to Low view
-            
-            // 3. Average the X/Z positions
-            // Ideally, if the distance is correct, these points should be identical.
-            // If they are different, averaging them compensates for the parallax error.
-            
-            // Important: We place the final object relative to the STANDING position (World Root)
-            const finalX = (targetHigh.x + targetLow.x) / 2;
-            const finalZ = (targetHigh.z + targetLow.z) / 2;
-            
-            // Create the Marker
-            createMarker(new THREE.Vector3(finalX, -ASSUMED_HEIGHT_HIGH, finalZ));
-            
-            // UI Finish
-            step = 3;
-            uiPanel.style.display = 'none'; // Hide UI to enjoy AR
-            document.getElementById('btn-reset').style.display = 'block';
-            uiPanel.appendChild(document.getElementById('btn-reset'));
-            uiPanel.style.display = 'block';
-            uiTitle.innerText = "Tracking Active";
-            uiDesc.innerText = `Object locked at depth ${(Math.abs(finalZ)).toFixed(1)}m`;
-            uiIcon.innerText = "🎯";
-            btnAction.style.display = 'none';
-        }
+            // 2. Apply Virtual Offset based on Step
+            let virtualOffset = new THREE.Vector3();
+            if (stepIndex === 1) virtualOffset.copy(OFFSET_CENTER);
+            if (stepIndex === 2) virtualOffset.copy(OFFSET_LEFT);
+            if (stepIndex === 3) virtualOffset.copy(OFFSET_RIGHT);
+            if (stepIndex === 4) virtualOffset.copy(OFFSET_LOW);
 
-        function createMarker(pos) {
-            const geo = new THREE.PlaneGeometry(0.5, 0.5); 
-            // Cyan Grid Texture for better visualization of perspective
-            const canvasTex = document.createElement('canvas');
-            canvasTex.width = 128; canvasTex.height = 128;
-            const ctx = canvasTex.getContext('2d');
-            ctx.fillStyle = 'rgba(0,255,255,0.2)'; ctx.fillRect(0,0,128,128);
-            ctx.strokeStyle = '#00FFFF'; ctx.lineWidth = 4; ctx.strokeRect(0,0,128,128);
-            ctx.beginPath(); ctx.moveTo(0,0); ctx.lineTo(128,128); ctx.moveTo(128,0); ctx.lineTo(0,128); ctx.stroke();
-            const tex = new THREE.CanvasTexture(canvasTex);
-
-            const mat = new THREE.MeshBasicMaterial({ 
-                map: tex, side: THREE.DoubleSide, transparent: true, opacity: 0.9, depthTest: false 
+            // 3. Store the "Virtual Ray" (The ray as if we actually moved in 3D space)
+            capturedRays.push({
+                origin: virtualOffset, 
+                direction: rawDir
             });
-            
-            markerMesh = new THREE.Mesh(geo, mat);
-            markerMesh.rotation.x = -Math.PI / 2;
-            markerMesh.position.copy(pos);
-            markerMesh.renderOrder = 999;
-            scene.add(markerMesh);
-            
-            // Add a vertical line to visualize the anchor
-            const lineGeo = new THREE.BufferGeometry().setFromPoints([
-                new THREE.Vector3(pos.x, pos.y, pos.z),
-                new THREE.Vector3(pos.x, pos.y + 0.5, pos.z)
-            ]);
-            const line = new THREE.Line(lineGeo, new THREE.LineBasicMaterial({ color: 0x00ffff }));
-            scene.add(line);
+
+            // 4. Advance
+            stepIndex++;
+            if (stepIndex > 4) {
+                calculateIntersection();
+            } else {
+                updateUI();
+            }
         }
 
         // --------------------------------------------------------------------------
-        // 5. LOOP
+        // 5. THE MATH (Least Squares Intersection)
+        // --------------------------------------------------------------------------
+        function calculateIntersection() {
+            // We have 4 rays. We want the point closest to all 4.
+            // This is a simplified "Midpoint of Closest Approach" algorithm.
+            
+            let accumulatedPoint = new THREE.Vector3(0,0,0);
+            let count = 0;
+
+            // We calculate intersections for every pair of rays
+            for (let i = 0; i < capturedRays.length; i++) {
+                for (let j = i + 1; j < capturedRays.length; j++) {
+                    
+                    const ray1 = capturedRays[i];
+                    const ray2 = capturedRays[j];
+
+                    // Find closest point between two skew lines
+                    const result = closestPointBetweenRays(ray1, ray2);
+                    if (result) {
+                        accumulatedPoint.add(result);
+                        count++;
+                    }
+                }
+            }
+
+            if (count > 0) {
+                accumulatedPoint.divideScalar(count); // Average
+            } else {
+                // Fallback (should rarely happen)
+                accumulatedPoint.set(0, -1.6, -2);
+            }
+
+            placeSquare(accumulatedPoint);
+            finishSetup();
+        }
+
+        function closestPointBetweenRays(r1, r2) {
+            // Math for closest point on two lines
+            // P1 = O1 + t * D1
+            // P2 = O2 + u * D2
+            const p1 = r1.origin;
+            const d1 = r1.direction;
+            const p2 = r2.origin;
+            const d2 = r2.direction;
+
+            const n = new THREE.Vector3().crossVectors(d1, d2);
+            const n2 = n.lengthSq();
+            
+            // If parallel lines
+            if (n2 < 0.0001) return null;
+
+            // Vector between origins
+            const d12 = new THREE.Vector3().subVectors(p2, p1);
+
+            // Calculate 't' for Ray 1 closest point
+            const n_cross_d2 = new THREE.Vector3().crossVectors(d2, n);
+            const t = d12.dot(n_cross_d2) / n2;
+
+            // Calculate 'u' for Ray 2 closest point
+            const n_cross_d1 = new THREE.Vector3().crossVectors(d1, n);
+            const u = d12.dot(n_cross_d1) / n2;
+
+            // Calculate the points on the rays
+            const pointOnRay1 = p1.clone().add(d1.clone().multiplyScalar(t));
+            const pointOnRay2 = p2.clone().add(d2.clone().multiplyScalar(u));
+
+            // Return the midpoint between them
+            return new THREE.Vector3().addVectors(pointOnRay1, pointOnRay2).multiplyScalar(0.5);
+        }
+
+        function placeSquare(pos) {
+            // Create Square
+            const geo = new THREE.PlaneGeometry(0.5, 0.5); 
+            // Cyan with grid pattern
+            const mat = new THREE.MeshBasicMaterial({ 
+                color: 0x00ffff, side: THREE.DoubleSide, transparent: true, opacity: 0.8,
+                depthTest: false // Draw on top
+            });
+            markerMesh = new THREE.Mesh(geo, mat);
+            markerMesh.rotation.x = -Math.PI / 2;
+            markerMesh.renderOrder = 999;
+            
+            // Set Position from Math
+            markerMesh.position.copy(pos);
+            worldRoot.add(markerMesh);
+
+            debug.innerText = `Pos: ${pos.x.toFixed(2)}, ${pos.y.toFixed(2)}, ${pos.z.toFixed(2)}`;
+        }
+
+        function finishSetup() {
+            uiDots.style.display = 'none';
+            uiStep.innerText = "Tracking Active";
+            uiDesc.innerText = "Square Locked. Use Re-Align if you walk.";
+            btnAction.style.display = 'none';
+            btnFix.style.display = 'block';
+            stepIndex = 5; // Ready state
+        }
+
+        // --------------------------------------------------------------------------
+        // 6. ANIMATION
         // --------------------------------------------------------------------------
         function animate() {
             requestAnimationFrame(animate);
