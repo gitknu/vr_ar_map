@@ -1,0 +1,414 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Multi-Point Precision AR</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #000; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+        
+        /* 1. CAMERA FEED (Optimized) */
+        #camera-feed {
+            position: absolute;
+            top: 50%; left: 50%;
+            transform: translate(-50%, -50%);
+            min-width: 100%; min-height: 100%;
+            width: auto; height: auto;
+            z-index: 0;
+            object-fit: cover;
+            filter: contrast(1.1) brightness(1.1); 
+        }
+
+        /* 2. AR CANVAS */
+        #ar-overlay {
+            position: absolute;
+            top: 0; left: 0;
+            width: 100%; height: 100%;
+            z-index: 1;
+            background: transparent;
+        }
+
+        /* 3. CROSSHAIR */
+        #crosshair {
+            position: absolute;
+            top: 50%; left: 50%;
+            width: 24px; height: 24px;
+            transform: translate(-50%, -50%);
+            z-index: 2;
+            pointer-events: none;
+        }
+        #crosshair::before, #crosshair::after {
+            content: ''; position: absolute; background: #00ff00; box-shadow: 0 0 4px #000;
+        }
+        #crosshair::before { top: 11px; left: 0; width: 24px; height: 2px; }
+        #crosshair::after { top: 0; left: 11px; width: 2px; height: 24px; }
+
+        /* 4. UI LAYER */
+        #ui-layer {
+            position: absolute;
+            bottom: 30px; left: 0; width: 100%;
+            z-index: 10;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 12px;
+            pointer-events: none;
+        }
+
+        .btn {
+            pointer-events: auto;
+            padding: 14px 28px;
+            font-size: 16px;
+            border: none;
+            border-radius: 50px;
+            font-weight: 700;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            transition: all 0.2s;
+        }
+        .btn:active { transform: scale(0.95); }
+
+        #btn-action { background: #32D74B; color: black; min-width: 200px; }
+        #btn-fix { background: #FF9500; color: white; display: none; font-size: 14px; padding: 10px 20px;}
+
+        /* INSTRUCTIONS & PROGRESS */
+        #status-box {
+            background: rgba(0, 0, 0, 0.7);
+            backdrop-filter: blur(5px);
+            padding: 10px 20px;
+            border-radius: 16px;
+            text-align: center;
+            border: 1px solid rgba(255,255,255,0.1);
+        }
+        #main-text { color: white; font-size: 14px; font-weight: 600; display: block; margin-bottom: 4px; }
+        #sub-text { color: #aaa; font-size: 11px; display: block; }
+
+        /* Progress Dots */
+        #progress-dots {
+            display: flex; gap: 6px; margin-top: 5px; justify-content: center;
+        }
+        .dot { width: 8px; height: 8px; background: #444; border-radius: 50%; }
+        .dot.active { background: #00ff00; box-shadow: 0 0 5px #00ff00; }
+
+        #debug {
+            position: absolute; top: 5px; left: 5px;
+            color: #00FF00; background: rgba(0,0,0,0.5);
+            padding: 4px; font-size: 9px; z-index: 20; pointer-events: none;
+        }
+    </style>
+    <!-- Three.js -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+</head>
+<body>
+
+    <video id="camera-feed" playsinline autoplay muted></video>
+    <canvas id="ar-overlay"></canvas>
+    
+    <div id="crosshair"></div>
+    <div id="debug">System Ready.</div>
+    
+    <div id="ui-layer">
+        <div id="status-box">
+            <span id="main-text">Start Sensors</span>
+            <span id="sub-text">Tap the button below</span>
+            <div id="progress-dots">
+                <div class="dot" id="d1"></div>
+                <div class="dot" id="d2"></div>
+                <div class="dot" id="d3"></div>
+                <div class="dot" id="d4"></div>
+            </div>
+        </div>
+        
+        <button id="btn-action" class="btn">INITIALIZE</button>
+        <button id="btn-fix" class="btn">DRIFT FIX (TAP)</button>
+    </div>
+
+    <script>
+        // --------------------------------------------------------------------------
+        // 1. SENSOR LOGIC (With Smoothing)
+        // --------------------------------------------------------------------------
+        class SmoothOrientationControls {
+            constructor(object) {
+                this.object = object;
+                this.object.rotation.reorder('YXZ');
+                this.enabled = false;
+                this.deviceOrientation = {};
+                this.screenOrientation = 0;
+                
+                // Cache Math Objects
+                this.targetQuaternion = new THREE.Quaternion();
+                this.euler = new THREE.Euler();
+                this.q0 = new THREE.Quaternion();
+                this.q1 = new THREE.Quaternion(-Math.sqrt(0.5), 0, 0, Math.sqrt(0.5)); 
+                this.zee = new THREE.Vector3(0, 0, 1);
+
+                window.addEventListener('deviceorientation', e => this.deviceOrientation = e, false);
+                window.addEventListener('orientationchange', () => this.screenOrientation = window.orientation || 0, false);
+                this.screenOrientation = window.orientation || 0;
+            }
+
+            update() {
+                if (!this.enabled || !this.deviceOrientation.alpha) return;
+
+                const alpha = this.deviceOrientation.alpha ? THREE.Math.degToRad(this.deviceOrientation.alpha) : 0;
+                const beta = this.deviceOrientation.beta ? THREE.Math.degToRad(this.deviceOrientation.beta) : 0;
+                const gamma = this.deviceOrientation.gamma ? THREE.Math.degToRad(this.deviceOrientation.gamma) : 0;
+                const orient = this.screenOrientation ? THREE.Math.degToRad(this.screenOrientation) : 0;
+
+                this.euler.set(beta, alpha, -gamma, 'YXZ'); 
+                this.targetQuaternion.setFromEuler(this.euler); 
+                this.targetQuaternion.multiply(this.q1); 
+                this.targetQuaternion.multiply(this.q0.setFromAxisAngle(this.zee, -orient));
+
+                // Smoothing factor: 0.15 is a good balance between lag and smoothness
+                this.object.quaternion.slerp(this.targetQuaternion, 0.15);
+            }
+        }
+
+        // --------------------------------------------------------------------------
+        // 2. MAIN STATE & VARIABLES
+        // --------------------------------------------------------------------------
+        const video = document.getElementById('camera-feed');
+        const canvas = document.getElementById('ar-overlay');
+        const btnAction = document.getElementById('btn-action');
+        const btnFix = document.getElementById('btn-fix');
+        const mainText = document.getElementById('main-text');
+        const subText = document.getElementById('sub-text');
+        const debug = document.getElementById('debug');
+        const dots = [document.getElementById('d1'), document.getElementById('d2'), document.getElementById('d3'), document.getElementById('d4')];
+
+        // States: 'INIT' -> 'CALIBRATE' -> 'LOCKED'
+        let appState = 'INIT';
+        let calibrationPoints = [];
+        const TOTAL_POINTS = 4;
+        
+        let scene, camera, renderer, controls;
+        let floorPlane;
+        let worldRoot; // The container we move to fix drift
+        let markerMesh = null;
+        let tempDotsGroup = null; // To show where user clicked during calib
+
+        const raycaster = new THREE.Raycaster();
+        const centerScreen = new THREE.Vector2(0, 0); 
+        const hitTarget = new THREE.Vector3();
+
+        function log(msg) { debug.innerText = msg; }
+
+        // --------------------------------------------------------------------------
+        // 3. INIT CAMERA (Potato Mode)
+        // --------------------------------------------------------------------------
+        async function initCamera() {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({
+                    video: { facingMode: 'environment', width: { ideal: 320 }, height: { ideal: 240 } },
+                    audio: false
+                });
+                video.srcObject = stream;
+                video.play();
+            } catch (e) { log("Cam Error: " + e.message); }
+        }
+
+        // --------------------------------------------------------------------------
+        // 4. INIT THREE.JS
+        // --------------------------------------------------------------------------
+        function initThree() {
+            scene = new THREE.Scene();
+            
+            // World Root: Moves the whole world to correct drift
+            worldRoot = new THREE.Group();
+            scene.add(worldRoot);
+            
+            // Temp dots container (Visual feedback during calibration)
+            tempDotsGroup = new THREE.Group();
+            worldRoot.add(tempDotsGroup);
+
+            camera = new THREE.PerspectiveCamera(80, window.innerWidth / window.innerHeight, 0.1, 100);
+            
+            renderer = new THREE.WebGLRenderer({ 
+                canvas: canvas, alpha: true, antialias: false, 
+                precision: 'lowp', powerPreference: 'high-performance' 
+            });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(1); 
+
+            // Light
+            scene.add(new THREE.AmbientLight(0xffffff, 2));
+
+            // Floor Plane (-1.6m)
+            floorPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 1.6);
+            
+            animate();
+        }
+
+        // --------------------------------------------------------------------------
+        // 5. INTERACTION LOGIC
+        // --------------------------------------------------------------------------
+        
+        btnAction.addEventListener('click', () => {
+            if (appState === 'INIT') {
+                // Request Permissions
+                if (typeof DeviceOrientationEvent?.requestPermission === 'function') {
+                    DeviceOrientationEvent.requestPermission().then(res => {
+                        if (res === 'granted') startCalibrationMode();
+                    });
+                } else {
+                    startCalibrationMode();
+                }
+            } 
+            else if (appState === 'CALIBRATE') {
+                captureCalibrationPoint();
+            }
+        });
+
+        function startCalibrationMode() {
+            controls = new SmoothOrientationControls(camera);
+            controls.enabled = true;
+            appState = 'CALIBRATE';
+            
+            updateUI_Calibration();
+            log("Mode: Calibration. Aim and Tap.");
+        }
+
+        function updateUI_Calibration() {
+            const count = calibrationPoints.length;
+            
+            // Update Text Instructions based on count
+            if(count === 0) {
+                mainText.innerText = "View 1: Front";
+                subText.innerText = "Aim at target. Tap Capture.";
+            } else if (count === 1) {
+                mainText.innerText = "View 2: Step Left";
+                subText.innerText = "Move phone left. Aim at SAME spot.";
+            } else if (count === 2) {
+                mainText.innerText = "View 3: Step Right";
+                subText.innerText = "Move phone right. Aim at SAME spot.";
+            } else if (count === 3) {
+                mainText.innerText = "View 4: Top/High";
+                subText.innerText = "Lift phone high. Aim at SAME spot.";
+            }
+
+            btnAction.innerText = `CAPTURE (${count}/${TOTAL_POINTS})`;
+            
+            // Update Dots
+            dots.forEach((d, i) => {
+                if(i < count) d.classList.add('active');
+            });
+        }
+
+        function captureCalibrationPoint() {
+            // Raycast center screen
+            raycaster.setFromCamera(centerScreen, camera);
+            if (raycaster.ray.intersectPlane(floorPlane, hitTarget)) {
+                
+                // Save the point
+                const p = hitTarget.clone();
+                calibrationPoints.push(p);
+
+                // Visual Feedback: Add a small dot to the scene where user tapped
+                const dotGeo = new THREE.MeshBasicMaterial({ color: 0xffff00 });
+                const dot = new THREE.Mesh(new THREE.SphereGeometry(0.05), dotGeo);
+                dot.position.copy(p);
+                tempDotsGroup.add(dot);
+
+                const count = calibrationPoints.length;
+
+                if (count >= TOTAL_POINTS) {
+                    finalizeCalibration();
+                } else {
+                    updateUI_Calibration();
+                }
+            } else {
+                log("Missed floor. Aim lower.");
+            }
+        }
+
+        function finalizeCalibration() {
+            appState = 'LOCKED';
+
+            // 1. Calculate Centroid (Average Position)
+            let avgX = 0, avgZ = 0;
+            calibrationPoints.forEach(p => {
+                avgX += p.x;
+                avgZ += p.z;
+            });
+            avgX /= calibrationPoints.length;
+            avgZ /= calibrationPoints.length;
+
+            const finalPos = new THREE.Vector3(avgX, -1.6, avgZ); // Ensure Y is floor level
+
+            // 2. Clear temporary dots
+            worldRoot.remove(tempDotsGroup);
+
+            // 3. Create the Main Square
+            const geo = new THREE.PlaneGeometry(0.5, 0.5); 
+            const mat = new THREE.MeshBasicMaterial({ 
+                color: 0x00ffff, side: THREE.DoubleSide, opacity: 0.8, transparent: true 
+            });
+            markerMesh = new THREE.Mesh(geo, mat);
+            markerMesh.rotation.x = -Math.PI / 2;
+            
+            // Position square at the calculated centroid
+            markerMesh.position.copy(finalPos);
+            worldRoot.add(markerMesh);
+
+            // 4. Update UI
+            mainText.innerText = "Tracking Active";
+            subText.innerText = "Square locked using 4-point average.";
+            btnAction.style.display = 'none';
+            btnFix.style.display = 'block'; // Show drift fix button
+            document.getElementById('progress-dots').style.display = 'none';
+            
+            log(`Locked at X:${finalPos.x.toFixed(2)} Z:${finalPos.z.toFixed(2)}`);
+        }
+
+        // --------------------------------------------------------------------------
+        // 6. DRIFT FIX LOGIC (Manual Correction)
+        // --------------------------------------------------------------------------
+        btnFix.addEventListener('click', () => {
+            if (appState !== 'LOCKED' || !markerMesh) return;
+
+            // Raycast where user is looking NOW
+            raycaster.setFromCamera(centerScreen, camera);
+            if (raycaster.ray.intersectPlane(floorPlane, hitTarget)) {
+                
+                // Current World Position of the marker
+                const currentMarkerWorldPos = new THREE.Vector3();
+                markerMesh.getWorldPosition(currentMarkerWorldPos);
+
+                // Calculate Vector Delta
+                // "I aimed HERE (hitTarget), but the square is THERE (markerPos)"
+                // We need to move the world so that markerPos becomes hitTarget
+                const offset = new THREE.Vector3().subVectors(hitTarget, currentMarkerWorldPos);
+
+                // Shift the container
+                worldRoot.position.add(offset);
+
+                // Flash visual effect
+                markerMesh.material.color.setHex(0xffffff);
+                setTimeout(() => markerMesh.material.color.setHex(0x00ffff), 150);
+                log("Drift Corrected.");
+            }
+        });
+
+        // --------------------------------------------------------------------------
+        // 7. LOOP
+        // --------------------------------------------------------------------------
+        function animate() {
+            requestAnimationFrame(animate);
+            if (controls) controls.update();
+            renderer.render(scene, camera);
+        }
+
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+        initCamera();
+        initThree();
+
+    </script>
+</body>
+</html>
