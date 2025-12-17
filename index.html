@@ -40,13 +40,21 @@
             position: absolute; top: 50%; left: 50%;
             width: 60px; height: 60px;
             transform: translate(-50%, -50%);
-            border: 3px solid #00ff00;
+            border: 4px solid #00ff00;
             border-radius: 50%;
             z-index: 5;
             display: none; /* Controlled by JS */
             box-shadow: 0 0 10px #00ff00;
-            transition: all 0.1s linear;
+            transition: width 0.1s, height 0.1s;
         }
+        /* Direction Arrows */
+        #arrow-left, #arrow-right {
+            position: absolute; top: 50%; width: 0; height: 0; 
+            border-top: 20px solid transparent; border-bottom: 20px solid transparent;
+            z-index: 6; display: none; transform: translateY(-50%);
+        }
+        #arrow-left { left: 20px; border-right: 30px solid #00ff00; }
+        #arrow-right { right: 20px; border-left: 30px solid #00ff00; }
 
         #lock-indicator {
             position: absolute; top: 50%; left: 50%;
@@ -61,11 +69,11 @@
         /* PROGRESS BAR */
         #progress-container {
             position: absolute; top: 20px; left: 50%; transform: translateX(-50%);
-            width: 200px; height: 6px; background: rgba(255,255,255,0.2);
-            border-radius: 3px; z-index: 20; display: none;
+            width: 200px; height: 8px; background: rgba(255,255,255,0.2);
+            border-radius: 4px; z-index: 20; display: none; overflow: hidden;
         }
         #progress-fill {
-            height: 100%; width: 0%; background: #00ff00; border-radius: 3px;
+            height: 100%; width: 0%; background: #00ff00; 
             transition: width 0.3s;
         }
 
@@ -124,6 +132,7 @@
     <!-- HUD -->
     <div id="crosshair"></div>
     <div id="guide-ring"></div> <!-- The moving target -->
+    <div id="arrow-left"></div> <div id="arrow-right"></div>
     <div id="lock-indicator"></div>
     <div id="progress-container"><div id="progress-fill"></div></div>
     
@@ -147,8 +156,9 @@
         // CONFIGURATION
         // --------------------------------------------------------------------------
         const CV_SCAN_SIZE = 32; 
-        const VISUAL_THRESHOLD = 25; 
-        const ORBIT_RADIUS = 0.5; // Assumed distance (meters) user moves side-to-side
+        const VISUAL_THRESHOLD = 30; // Slightly looser to ensure matches
+        const ORBIT_RADIUS = 0.5; // Meters
+        const ANGLE_TOLERANCE = 0.15; // Radians (~8 degrees)
         
         // --------------------------------------------------------------------------
         // 1. SENSOR FUSION ENGINE
@@ -158,7 +168,7 @@
                 this.camera = camera;
                 this.camera.rotation.reorder('YXZ');
                 this.enabled = false;
-                this.deviceOrientation = {};
+                this.deviceOrientation = null;
                 this.screenOrientation = 0;
                 
                 this.targetQ = new THREE.Quaternion();
@@ -167,7 +177,7 @@
                 this.q1 = new THREE.Quaternion(-Math.sqrt(0.5), 0, 0, Math.sqrt(0.5)); 
                 this.zee = new THREE.Vector3(0, 0, 1);
                 
-                this.visualCorrectionQ = new THREE.Quaternion(); // Drift correction
+                this.visualCorrectionQ = new THREE.Quaternion(); 
 
                 window.addEventListener('deviceorientation', e => this.deviceOrientation = e);
                 window.addEventListener('orientationchange', () => this.screenOrientation = window.orientation || 0);
@@ -175,7 +185,7 @@
             }
 
             update() {
-                if (!this.enabled || !this.deviceOrientation.alpha) return;
+                if (!this.enabled || !this.deviceOrientation || !this.deviceOrientation.alpha) return;
 
                 const alpha = THREE.Math.degToRad(this.deviceOrientation.alpha || 0);
                 const beta = THREE.Math.degToRad(this.deviceOrientation.beta || 0);
@@ -188,13 +198,12 @@
                 this.targetQ.multiply(this.q0.setFromAxisAngle(this.zee, -orient));
 
                 let finalQ = this.targetQ.clone();
-                finalQ.premultiply(this.visualCorrectionQ); // Apply visual fix
+                finalQ.premultiply(this.visualCorrectionQ); 
                 
-                this.camera.quaternion.slerp(finalQ, 0.2); // Smooth movement
+                this.camera.quaternion.slerp(finalQ, 0.5); // Faster response
             }
 
             correctDrift(storedSnapshotQ) {
-                // Calculate drift: difference between current sensor reading and the stored snapshot
                 const sensorInv = this.targetQ.clone().invert();
                 const drift = storedSnapshotQ.clone().multiply(sensorInv);
                 this.visualCorrectionQ.slerp(drift, 0.05); 
@@ -209,10 +218,9 @@
         const cvCtx = cvCanvas.getContext('2d', { willReadFrequently: true });
 
         function extractVisualFingerprint(videoSource) {
+            if(videoSource.readyState < 2) return null;
             const vw = videoSource.videoWidth;
             const vh = videoSource.videoHeight;
-            if(vw === 0 || vh === 0) return null;
-
             const minDim = Math.min(vw, vh);
             const sx = (vw - minDim) / 2;
             const sy = (vh - minDim) / 2;
@@ -243,6 +251,8 @@
         const canvas = document.getElementById('ar-overlay');
         const debug = document.getElementById('debug');
         const guideRing = document.getElementById('guide-ring');
+        const arrowLeft = document.getElementById('arrow-left');
+        const arrowRight = document.getElementById('arrow-right');
         const progressFill = document.getElementById('progress-fill');
         const progressContainer = document.getElementById('progress-container');
         const lockIndicator = document.getElementById('lock-indicator');
@@ -255,213 +265,171 @@
 
         let scene, camera, renderer, controls;
         let worldRoot, markerMesh;
-        let guideMesh; // The 3D sphere helper
 
         let capturedPoints = []; 
         let isScanning = false;
         let isTracking = false;
         let scanTargets = [];
         let currentTargetIndex = 0;
+        let startQuaternion = new THREE.Quaternion(); // CRITICAL: Reference for relative movement
         
-        // Raycasting
         const raycaster = new THREE.Raycaster();
         const centerScreen = new THREE.Vector2(0, 0);
 
         // --------------------------------------------------------------------------
-        // 4. SCANNING LOGIC (The "Panorama" Orbit)
+        // 4. SCANNING LOGIC (Relative Orbit)
         // --------------------------------------------------------------------------
         
         function generateScanTargets() {
-            // We create a series of Yaw/Pitch offsets that the user must match.
-            // When they match these angles, we assume they translated (moved) to orbit the object.
-            // Angles in Radians.
-            const steps = [];
-            
-            // 1. Center
-            steps.push({ yaw: 0, pitch: 0, label: "Center" });
-            
-            // 2. Arc Left (User moves Left, Rotates Right to look at object)
-            // If I step LEFT, I must turn RIGHT (Negative Yaw) to keep object in center.
-            steps.push({ yaw: -0.15, pitch: 0, label: "Orbit Left" });
-            steps.push({ yaw: -0.30, pitch: 0, label: "Orbit Left" });
-            steps.push({ yaw: -0.15, pitch: 0, label: "Return Center" });
-            
-            // 3. Arc Right (User moves Right, Rotates Left)
-            steps.push({ yaw: 0, pitch: 0, label: "Center" });
-            steps.push({ yaw: 0.15, pitch: 0, label: "Orbit Right" });
-            steps.push({ yaw: 0.30, pitch: 0, label: "Orbit Right" });
-            steps.push({ yaw: 0.15, pitch: 0, label: "Return Center" });
-            
-            // 4. Low/High
-            steps.push({ yaw: 0, pitch: -0.2, label: "Look Down" });
-            steps.push({ yaw: 0, pitch: 0, label: "Done" });
-
-            return steps;
+            // Yaw (Left/Right), Pitch (Up/Down) relative to START position
+            return [
+                { yaw: 0, pitch: 0, label: "Hold Center" },
+                { yaw: -0.2, pitch: 0, label: "Orbit Left" },
+                { yaw: -0.4, pitch: 0, label: "Orbit Left More" },
+                { yaw: -0.2, pitch: 0, label: "Return" },
+                { yaw: 0, pitch: 0, label: "Center" },
+                { yaw: 0.2, pitch: 0, label: "Orbit Right" },
+                { yaw: 0.4, pitch: 0, label: "Orbit Right More" },
+                { yaw: 0.2, pitch: 0, label: "Return" },
+                { yaw: 0, pitch: -0.2, label: "Look Down" },
+                { yaw: 0, pitch: 0, label: "Done" }
+            ];
         }
 
         function updateGuideVisuals() {
             if (!isScanning || currentTargetIndex >= scanTargets.length) return;
 
-            const t = scanTargets[currentTargetIndex];
+            const step = scanTargets[currentTargetIndex];
             
-            // Convert Yaw/Pitch to 2D Screen coordinates to move the Green Ring
-            // We project a vector based on the target angle relative to current camera
-            
-            // However, simpler for the user: 
-            // We put a 3D Sphere in the world at the rotation we want, and user has to point at it.
-            if (!guideMesh) {
-                const geo = new THREE.SphereGeometry(0.05, 16, 16);
-                const mat = new THREE.MeshBasicMaterial({ color: 0x00ff00, transparent: true, opacity: 0.6, wireframe: true });
-                guideMesh = new THREE.Mesh(geo, mat);
-                camera.add(guideMesh); // Attach to camera initially to reset
-            }
+            // 1. Calculate Target Rotation in World Space (Relative to Start)
+            // Rotate the StartQuaternion by the Step Yaw/Pitch
+            const offsetEuler = new THREE.Euler(step.pitch, step.yaw, 0, 'YXZ');
+            const offsetQ = new THREE.Quaternion().setFromEuler(offsetEuler);
+            const globalTargetQ = startQuaternion.clone().multiply(offsetQ);
 
-            // Calculate local position for the target sphere based on desired angle
-            // x = sin(yaw), y = sin(pitch), z = -cos(yaw) roughly
-            const dist = 2; // Place target 2 meters away in UI space
-            const tx = Math.sin(t.yaw) * dist; // Yaw affects X
-            const ty = Math.sin(t.pitch) * dist; // Pitch affects Y
-            const tz = -Math.cos(t.yaw) * Math.cos(t.pitch) * dist;
+            // 2. Check Alignment (Angle between Current Camera Q and Target Q)
+            const angleDiff = camera.quaternion.angleTo(globalTargetQ);
             
-            // We actually want these relative to the "World" start frame, not attached to camera every frame.
-            // But since we don't have world coordinates yet, we use the Camera's *initial* orientation as world reference.
-            // For simplicity in this HUD:
-            // We calculate the difference between Current Angle and Target Angle.
-            // Then we draw the 2D Ring based on that delta.
+            // 3. Project Target to Screen for UI
+            // Create a point 1 meter in front of the TARGET rotation
+            const targetVec = new THREE.Vector3(0, 0, -1).applyQuaternion(globalTargetQ);
             
-            const currentEuler = new THREE.Euler().setFromQuaternion(camera.quaternion, 'YXZ');
-            // Note: This Euler is absolute device orientation. We need relative to start.
-            // But easier: Just use the guideMesh in 3D scene.
+            // Project this 3D vector onto the 2D camera screen
+            // We clone it because project modifies the vector
+            const screenVec = targetVec.clone().project(camera); 
             
-            // Let's detach guideMesh from camera and put it in WorldRoot, but rotated relative to the *Start* Quaternion.
-            // Actually, best way: The `OrientationManager` provides a stable frame.
-            // We just need to check if the camera is pointing at the target angles.
-            
-            // Update UI Text
+            // Check if target is behind us
+            const camForward = new THREE.Vector3(0, 0, -1).applyQuaternion(camera.quaternion);
+            const isInFront = camForward.dot(targetVec) > 0;
+
+            const x = (screenVec.x * 0.5 + 0.5) * window.innerWidth;
+            const y = -(screenVec.y * 0.5 - 0.5) * window.innerHeight;
+
+            // UI UPDATES
             uiStatus.innerText = `Point ${currentTargetIndex + 1}/${scanTargets.length}`;
-            uiInstr.innerText = t.label;
+            uiInstr.innerText = step.label;
             progressContainer.style.display = 'block';
             progressFill.style.width = `${(currentTargetIndex / scanTargets.length) * 100}%`;
             
-            // Guide Ring Logic (2D HUD)
-            // We project the "ideal" rotation onto the screen.
-            // Delta Yaw
-            const dYaw = t.yaw - currentEuler.y; // This is rough, but works for guidance
-            const dPitch = t.pitch - currentEuler.x;
-            
-            // Map radians to pixels (FOV ~80 deg)
-            const fovRad = THREE.Math.degToRad(80);
-            const xPx = -(dYaw / fovRad) * window.innerWidth; // Invert X for mirror feel
-            const yPx = (dPitch / fovRad) * window.innerHeight;
-            
-            // Clamp to screen
-            const cx = window.innerWidth / 2;
-            const cy = window.innerHeight / 2;
-            
-            guideRing.style.display = 'block';
-            guideRing.style.transform = `translate(calc(-50% + ${xPx}px), calc(-50% + ${yPx}px))`;
-            
-            // Check for alignment
-            const angleDist = Math.sqrt(dYaw*dYaw + dPitch*dPitch);
-            
-            if (angleDist < 0.15) { // ~8 degrees tolerance
+            // ARROWS vs RING
+            arrowLeft.style.display = 'none';
+            arrowRight.style.display = 'none';
+            guideRing.style.display = 'none';
+
+            if (!isInFront) {
+                // Completely turned away
+                // Rough guess which way to turn
+                if (step.yaw < 0) arrowLeft.style.display = 'block';
+                else arrowRight.style.display = 'block';
+            } else if (screenVec.x < -0.9) {
+                arrowLeft.style.display = 'block';
+            } else if (screenVec.x > 0.9) {
+                arrowRight.style.display = 'block';
+            } else {
+                // Target is on screen
+                guideRing.style.display = 'block';
+                guideRing.style.transform = `translate(${x - 30}px, ${y - 30}px)`; // -30 is half of ring size (60)
+            }
+
+            // 4. Capture Logic
+            if (angleDiff < ANGLE_TOLERANCE) {
                 guideRing.style.borderColor = 'white';
                 guideRing.style.boxShadow = '0 0 15px white';
-                // Auto Capture
-                if (!t.capturing) {
-                    t.capturing = true;
+                
+                if (!step.capturing) {
+                    step.capturing = true;
+                    // Wait a moment for stability then capture
                     setTimeout(() => {
-                        captureCurrentFrame(t);
-                        currentTargetIndex++;
-                        if (currentTargetIndex >= scanTargets.length) {
-                            finishScanning();
-                        } else {
-                            t.capturing = false; // Reset for next logic
+                        // Re-check alignment before committing
+                        if (camera.quaternion.angleTo(globalTargetQ) < ANGLE_TOLERANCE + 0.05) {
+                            captureCurrentFrame(step, globalTargetQ);
+                            currentTargetIndex++;
+                            if (currentTargetIndex >= scanTargets.length) {
+                                finishScanning();
+                            }
                         }
-                    }, 500); // Hold for 0.5s to capture
+                        step.capturing = false;
+                    }, 400); 
                 }
             } else {
                 guideRing.style.borderColor = '#00ff00';
                 guideRing.style.boxShadow = '0 0 10px #00ff00';
-                t.capturing = false;
+                step.capturing = false;
             }
         }
 
-        function captureCurrentFrame(targetStep) {
-            // 1. Visual Fingerprint
+        function captureCurrentFrame(step, targetQ) {
             const fp = extractVisualFingerprint(video);
             if(!fp) return;
 
-            // 2. Math Data
             const q = camera.quaternion.clone();
             raycaster.setFromCamera(centerScreen, camera);
             const dir = raycaster.ray.direction.clone();
 
-            // 3. INFERRED POSITION (Parallax)
-            // If user Rotated -0.2 rads (Left in screen, looking Right), it means they are to the LEFT of the object.
-            // We assume Orbit Radius (0.5m).
-            // Pos X = sin(yaw) * Radius. 
-            // But inverted: Looking Right (-Yaw) means I am at Left (-X).
-            // Wait, looking right is negative rotation around Y? In ThreeJS YXZ, yes.
-            // If I look right, my angle is negative. I am standing to the left.
-            // x = sin(angle) * Radius.
+            // Parallax Math: Infer position based on Rotation relative to Start
+            // angleDiff from Start
+            const relativeQ = startQuaternion.clone().invert().multiply(q);
+            const relativeEuler = new THREE.Euler().setFromQuaternion(relativeQ, 'YXZ');
             
-            // Let's use the ACTUAL camera angle, not the target angle, for precision.
-            const euler = new THREE.Euler().setFromQuaternion(q, 'YXZ');
-            
-            // Virtual Offset Calculation
             const vOffset = new THREE.Vector3();
-            
-            // X-axis shift (Orbit side-to-side)
-            // If I rotate Y by theta, I moved along circle.
-            // x = R * sin(theta)
-            // z = R * (1 - cos(theta)) -> Parallax depth effect
-            vOffset.x = Math.sin(euler.y) * ORBIT_RADIUS;
-            vOffset.z = (1 - Math.cos(euler.y)) * ORBIT_RADIUS;
-            
-            // Y-axis shift (Crouch)
-            // If I look down (positive pitch in some systems, check ThreeJS), I am high?
-            // Usually we look down at object.
-            vOffset.y = Math.sin(euler.x) * ORBIT_RADIUS;
+            // Looking Right (-Y rotation) means I moved Left (-X)
+            vOffset.x = Math.sin(relativeEuler.y) * ORBIT_RADIUS; 
+            vOffset.z = (1 - Math.cos(relativeEuler.y)) * ORBIT_RADIUS; 
+            vOffset.y = Math.sin(relativeEuler.x) * ORBIT_RADIUS;
 
             capturedPoints.push({
-                origin: vOffset, // The inferred physical position
+                origin: vOffset,
                 direction: dir,
                 quaternion: q,
                 visualData: fp
             });
-            
+
             // Flash effect
             const flash = document.createElement('div');
-            flash.style.position = 'fixed'; flash.style.top=0; flash.style.left=0;
+            flash.style.position='fixed'; flash.style.top=0; flash.style.left=0;
             flash.style.width='100%'; flash.style.height='100%';
-            flash.style.background='white'; flash.style.opacity='0.5'; flash.style.zIndex='100';
+            flash.style.background='white'; flash.style.opacity='0.4'; flash.style.zIndex='100';
             document.body.appendChild(flash);
-            setTimeout(() => flash.remove(), 100);
+            setTimeout(()=>flash.remove(), 100);
         }
 
         function finishScanning() {
             isScanning = false;
             guideRing.style.display = 'none';
             progressContainer.style.display = 'none';
+            uiInstr.innerText = "Processing...";
             
-            calculateWorldIntersection();
+            setTimeout(calculateWorldIntersection, 200);
         }
 
         function calculateWorldIntersection() {
-            // Average the intersection of all ray pairs
             let acc = new THREE.Vector3(0,0,0);
             let count = 0;
             
-            // We need at least a few points
-            const n = capturedPoints.length;
-            if (n < 2) return;
-
-            // Iterate pairs with sufficient baseline
-            for(let i=0; i<n; i++) {
-                for(let j=i+2; j<n; j+=2) { // Skip adjacent frames to ensure baseline
+            for(let i=0; i<capturedPoints.length; i++) {
+                for(let j=i+1; j<capturedPoints.length; j++) { 
                     const pt = closestPointBetweenRays(capturedPoints[i], capturedPoints[j]);
-                    if(pt && pt.lengthSq() < 100) { // Sanity check distance
+                    if(pt && pt.z < -0.2 && pt.length() < 5) { // Sanity check
                         acc.add(pt);
                         count++;
                     }
@@ -469,13 +437,13 @@
             }
 
             if(count > 0) acc.divideScalar(count);
-            else acc.set(0, -1.0, -2); // Fallback
+            else acc.set(0, -1.0, -2); 
 
             placeMarker(acc);
             
             isTracking = true;
-            uiStatus.innerText = "Tracking Active";
-            uiInstr.innerText = "Visual Lock Enabled. Move freely.";
+            uiStatus.innerText = "TRACKING ACTIVE";
+            uiInstr.innerText = "Move around. System will auto-correct.";
             btnAction.style.display = 'none';
             btnFix.style.display = 'block';
         }
@@ -485,7 +453,7 @@
             const p2 = r2.origin; const d2 = r2.direction;
             const n = new THREE.Vector3().crossVectors(d1, d2);
             const n2 = n.lengthSq();
-            if (n2 < 0.0001) return null; // Parallel rays
+            if (n2 < 0.0001) return null;
             const d12 = new THREE.Vector3().subVectors(p2, p1);
             const t = d12.dot(new THREE.Vector3().crossVectors(d2, n)) / n2;
             const u = d12.dot(new THREE.Vector3().crossVectors(d1, n)) / n2;
@@ -515,7 +483,6 @@
             if (controls) controls.update();
             
             if (isScanning) {
-                // UI update logic handled in updateGuideVisuals
                 updateGuideVisuals();
             }
             
@@ -527,7 +494,6 @@
         }
 
         function runVisualLocalization() {
-            // Run heavy CV task every 4th frame
             if (frameCount % 4 !== 0) return;
 
             const currentQ = camera.quaternion;
@@ -539,9 +505,7 @@
 
             // Search captured library
             for (let i = 0; i < capturedPoints.length; i++) {
-                // 1. Angle Check (Optimization)
-                // Only pixel-compare frames with similar rotation (< 15 deg)
-                if (currentQ.angleTo(capturedPoints[i].quaternion) < 0.25) {
+                if (currentQ.angleTo(capturedPoints[i].quaternion) < 0.3) {
                     const diff = compareFingerprints(currentFP, capturedPoints[i].visualData);
                     if (diff < bestDiff) {
                         bestDiff = diff;
@@ -550,41 +514,27 @@
                 }
             }
 
-            // Lock Logic
             if (bestIdx !== -1 && bestDiff < VISUAL_THRESHOLD) {
                 lockIndicator.classList.add('locked');
-                
-                // 1. Correct Orientation Drift
                 controls.correctDrift(capturedPoints[bestIdx].quaternion);
 
-                // 2. Auto-Relocate Position (The "Fix")
-                // If we have a lock, we know we are looking at the object.
-                // We should gently slide the virtual marker to the center of our view 
-                // IF the math says it drifted.
+                // AUTO-RELOCATE MARKER
                 if (markerMesh) {
                     raycaster.setFromCamera(centerScreen, camera);
                     const origin = raycaster.ray.origin;
                     const dir = raycaster.ray.direction;
                     
-                    // Project ray to the horizontal plane of the marker
-                    // y = markerY. 
-                    const groundY = markerMesh.position.y;
-                    
-                    // Avoid dividing by zero if looking horizonally
                     if (Math.abs(dir.y) > 0.05) {
+                        const groundY = markerMesh.position.y;
                         const t = (groundY - origin.y) / dir.y;
                         if (t > 0) {
                             const visualHit = new THREE.Vector3().copy(origin).add(dir.multiplyScalar(t));
-                            
-                            // Smoothly Interpolate (Lerp) towards visual hit
-                            // Only if the distance isn't massive (prevents glitches)
-                            if (visualHit.distanceTo(markerMesh.position) < 1.0) {
-                                markerMesh.position.lerp(visualHit, 0.1); // 10% correction per check
+                            if (visualHit.distanceTo(markerMesh.position) < 0.8) {
+                                markerMesh.position.lerp(visualHit, 0.05); // Smooth slide
                             }
                         }
                     }
                 }
-                
                 debug.innerText = `LOCKED: Frame ${bestIdx} (Err: ${bestDiff.toFixed(1)})`;
             } else {
                 lockIndicator.classList.remove('locked');
@@ -620,7 +570,6 @@
             animate();
         }
 
-        // Buttons
         btnAction.addEventListener('click', () => {
             if (typeof DeviceOrientationEvent?.requestPermission === 'function') {
                 DeviceOrientationEvent.requestPermission().then(r => { if(r==='granted') startScan(); });
@@ -630,7 +579,6 @@
         });
 
         btnFix.addEventListener('click', () => {
-            // Manual heavy reset
             if(markerMesh) markerMesh.position.set(0, -1, -2);
         });
 
@@ -643,14 +591,17 @@
             controls = new OrientationManager(camera);
             controls.enabled = true;
             
-            // Reset state
-            capturedPoints = [];
-            scanTargets = generateScanTargets();
-            currentTargetIndex = 0;
-            isScanning = true;
-            isTracking = false;
-            
-            btnAction.style.display = 'none';
+            // Allow sensor to settle for 200ms before taking the "Zero" reading
+            uiStatus.innerText = "Calibrating Sensors...";
+            setTimeout(() => {
+                startQuaternion.copy(camera.quaternion); // LOCK REFERENCE FRAME
+                capturedPoints = [];
+                scanTargets = generateScanTargets();
+                currentTargetIndex = 0;
+                isScanning = true;
+                isTracking = false;
+                btnAction.style.display = 'none';
+            }, 200);
         }
 
         window.addEventListener('resize', () => {
