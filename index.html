@@ -3,11 +3,11 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Precision AR + Resizer</title>
+    <title>Precision AR: Sensor Fusion + Visual Anchor</title>
     <style>
         body { margin: 0; overflow: hidden; background-color: #000; font-family: monospace; }
         
-        /* 1. CAMERA (Optimized) */
+        /* 1. CAMERA */
         #camera-feed {
             position: absolute; top: 50%; left: 50%;
             transform: translate(-50%, -50%);
@@ -20,90 +20,92 @@
         /* 2. AR OVERLAY */
         #ar-overlay {
             position: absolute; top: 0; left: 0;
-            width: 100%; height: 100%; z-index: 1;
+            width: 100%; height: 100%; z-index: 2;
             background: transparent;
         }
 
-        /* 3. CROSSHAIR */
+        /* 3. CROSSHAIR & UI */
         #crosshair {
             position: absolute; top: 50%; left: 50%;
-            width: 24px; height: 24px;
+            width: 32px; height: 32px;
             transform: translate(-50%, -50%);
-            z-index: 2; pointer-events: none;
+            z-index: 3; pointer-events: none;
         }
         #crosshair::before, #crosshair::after {
-            content: ''; position: absolute; background: #00ff00; box-shadow: 0 0 3px #000;
+            content: ''; position: absolute; background: #00ff00; box-shadow: 0 0 2px #000;
         }
-        #crosshair::before { top: 11px; left: 0; width: 24px; height: 2px; }
-        #crosshair::after { top: 0; left: 11px; width: 2px; height: 24px; }
+        #crosshair::before { top: 15px; left: 0; width: 32px; height: 2px; }
+        #crosshair::after { top: 0; left: 15px; width: 2px; height: 32px; }
+        
+        /* Visual Lock Indicator */
+        #lock-indicator {
+            position: absolute; top: 50%; left: 50%;
+            width: 60px; height: 60px;
+            transform: translate(-50%, -50%);
+            border: 2px solid cyan;
+            border-radius: 50%;
+            z-index: 3;
+            opacity: 0;
+            transition: opacity 0.2s, transform 0.2s;
+            box-shadow: 0 0 10px cyan;
+            pointer-events: none;
+        }
+        #lock-indicator.locked { opacity: 1; transform: translate(-50%, -50%) scale(1.1); }
 
-        /* 4. SIZE SLIDER (Top Right) */
+        /* Snapshot Strip */
+        #snapshot-strip {
+            position: absolute; top: 10px; left: 0; width: 100%; height: 60px;
+            z-index: 20; display: flex; justify-content: center; gap: 5px;
+            padding: 0 10px; pointer-events: none;
+        }
+        .snap-thumb {
+            height: 50px; width: 50px; object-fit: cover;
+            border: 1px solid #444; border-radius: 4px; background: #000; opacity: 0.6;
+        }
+        .snap-thumb.active-lock { border-color: cyan; opacity: 1; box-shadow: 0 0 8px cyan; }
+
+        /* Slider */
         #slider-container {
-            position: absolute; top: 80px; right: 10px;
-            width: 30px; height: 150px;
-            z-index: 20;
+            position: absolute; top: 90px; right: 10px;
+            width: 30px; height: 150px; z-index: 20;
             display: flex; align-items: center; justify-content: center;
         }
-        
-        /* Vertical Slider Hack */
         input[type=range][orient=vertical] {
-            writing-mode: bt-lr; /* IE */
-            -webkit-appearance: slider-vertical; /* WebKit */
-            width: 8px; height: 100%;
-            padding: 0 5px;
+            writing-mode: bt-lr; -webkit-appearance: slider-vertical;
+            width: 8px; height: 100%; padding: 0 5px;
         }
-        
-        /* Universal Transform fallback for standard browsers */
         #size-slider {
-            transform: rotate(-90deg);
-            width: 150px; /* Becomes height when rotated */
-            margin: 0;
-            background: rgba(255,255,255,0.2);
-            border-radius: 5px;
-            cursor: pointer;
+            transform: rotate(-90deg); width: 150px; margin: 0;
+            background: rgba(255,255,255,0.2); border-radius: 5px; cursor: pointer;
         }
-
         #slider-label {
-            position: absolute; top: 60px; right: 15px;
+            position: absolute; top: 70px; right: 15px;
             color: #00ffff; font-size: 10px; font-weight: bold;
-            z-index: 20; pointer-events: none;
-            text-shadow: 1px 1px 2px black;
+            z-index: 20; pointer-events: none; text-shadow: 1px 1px 2px black;
         }
 
-        /* 5. UI PANEL */
+        /* Control Panel */
         #ui-layer {
             position: absolute; bottom: 20px; left: 0; width: 100%;
             z-index: 10; display: flex; flex-direction: column; align-items: center;
             pointer-events: none;
         }
-
         #panel {
-            background: rgba(0, 0, 0, 0.85);
-            backdrop-filter: blur(8px);
-            padding: 15px 25px;
-            border-radius: 16px;
-            text-align: center;
-            border: 1px solid rgba(255,255,255,0.2);
-            width: 90%; max-width: 400px;
-            pointer-events: auto;
-            transition: all 0.2s;
+            background: rgba(0, 0, 0, 0.85); backdrop-filter: blur(8px);
+            padding: 15px 25px; border-radius: 16px; text-align: center;
+            border: 1px solid rgba(255,255,255,0.2); width: 90%; max-width: 400px;
+            pointer-events: auto; transition: all 0.2s;
         }
-
         #lbl-step { color: #00ff00; font-size: 14px; font-weight: bold; text-transform: uppercase; margin-bottom: 5px; display: block; }
         #lbl-desc { color: #fff; font-size: 16px; margin-bottom: 15px; display: block; }
-        
         button {
             background: #fff; color: #000; border: none; padding: 12px 30px;
             font-size: 16px; font-weight: 800; border-radius: 30px; cursor: pointer;
             text-transform: uppercase; width: 100%;
         }
         button:active { transform: scale(0.95); background: #ccc; }
-
-        #btn-fix {
-            background: #FF9500; color: white; display: none; margin-top: 10px; font-size: 14px;
-        }
-
-        /* Progress Dots */
+        #btn-fix { background: #FF9500; color: white; display: none; margin-top: 10px; font-size: 14px; }
+        
         #dots { display: flex; gap: 8px; justify-content: center; margin-bottom: 15px; }
         .dot { width: 8px; height: 8px; background: #444; border-radius: 50%; }
         .dot.active { background: #00ff00; box-shadow: 0 0 5px #00ff00; }
@@ -112,6 +114,7 @@
             position: absolute; top: 5px; left: 5px;
             color: lime; font-size: 10px; z-index: 20;
             background: rgba(0,0,0,0.5); padding: 4px; pointer-events: none;
+            white-space: pre-wrap;
         }
     </style>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
@@ -122,12 +125,12 @@
     <canvas id="ar-overlay"></canvas>
     
     <div id="crosshair"></div>
+    <div id="lock-indicator"></div>
     <div id="debug">System Ready.</div>
-    
-    <!-- Vertical Slider for Size -->
+    <div id="snapshot-strip"></div>
+
     <div id="slider-label">SIZE</div>
     <div id="slider-container">
-        <!-- Range: 0.05m (5cm) to 1.0m (1m). Default: 0.2 (20cm) -->
         <input type="range" id="size-slider" min="0.05" max="1.0" step="0.01" value="0.2">
     </div>
     
@@ -142,13 +145,20 @@
             <span id="lbl-step">Initialization</span>
             <span id="lbl-desc">Tap below to start sensors.</span>
             <button id="btn-action">START</button>
-            <button id="btn-fix">RE-ALIGN (Drift Fix)</button>
+            <button id="btn-fix">MANUAL FIX</button>
         </div>
     </div>
 
     <script>
         // --------------------------------------------------------------------------
-        // 1. ADVANCED SENSOR FUSION (SLERP Smoothing)
+        // CONFIG
+        // --------------------------------------------------------------------------
+        // Size of the "Visual Fingerprint" (32x32 is fast and sufficient for coarse lock)
+        const CV_SCAN_SIZE = 32; 
+        const VISUAL_THRESHOLD = 25; // Lower = stricter match (0-255 scale diff)
+        
+        // --------------------------------------------------------------------------
+        // 1. SENSOR FUSION (Orientation)
         // --------------------------------------------------------------------------
         class OrientationManager {
             constructor(camera) {
@@ -163,6 +173,9 @@
                 this.q0 = new THREE.Quaternion();
                 this.q1 = new THREE.Quaternion(-Math.sqrt(0.5), 0, 0, Math.sqrt(0.5)); 
                 this.zee = new THREE.Vector3(0, 0, 1);
+
+                // Correction Quaternion (Calculated from Visuals)
+                this.visualCorrectionQ = new THREE.Quaternion();
 
                 window.addEventListener('deviceorientation', e => this.deviceOrientation = e);
                 window.addEventListener('orientationchange', () => this.screenOrientation = window.orientation || 0);
@@ -182,16 +195,78 @@
                 this.targetQ.multiply(this.q1); 
                 this.targetQ.multiply(this.q0.setFromAxisAngle(this.zee, -orient));
 
-                this.camera.quaternion.slerp(this.targetQ, 0.15);
+                // 1. Get raw sensor rotation
+                let finalQ = this.targetQ.clone();
+                
+                // 2. Apply Visual Drift Correction (if any)
+                // We rotate the sensor frame by the visual correction
+                finalQ.premultiply(this.visualCorrectionQ);
+
+                // 3. Smooth
+                this.camera.quaternion.slerp(finalQ, 0.2);
+            }
+
+            // Called when Computer Vision finds a match
+            correctDrift(storedSnapshotQ) {
+                // Determine the difference between where sensors say we are (targetQ)
+                // and where the photo says we are (storedSnapshotQ).
+                // drift * targetQ = snapshotQ  =>  drift = snapshotQ * targetQ_inverse
+                const sensorInv = this.targetQ.clone().invert();
+                const drift = storedSnapshotQ.clone().multiply(sensorInv);
+                
+                // Slowly migrate the correction to avoid snapping
+                this.visualCorrectionQ.slerp(drift, 0.05); 
             }
         }
 
         // --------------------------------------------------------------------------
-        // 2. STATE & UI
+        // 2. COMPUTER VISION (Pixel Logic)
+        // --------------------------------------------------------------------------
+        // Helper canvas for processing image data invisible to user
+        const cvCanvas = document.createElement('canvas');
+        cvCanvas.width = CV_SCAN_SIZE;
+        cvCanvas.height = CV_SCAN_SIZE;
+        const cvCtx = cvCanvas.getContext('2d', { willReadFrequently: true });
+
+        function extractVisualFingerprint(videoSource) {
+            // Draw center crop of video into 32x32 canvas
+            const vw = videoSource.videoWidth;
+            const vh = videoSource.videoHeight;
+            const minDim = Math.min(vw, vh);
+            const sx = (vw - minDim) / 2;
+            const sy = (vh - minDim) / 2;
+            
+            cvCtx.drawImage(videoSource, sx, sy, minDim, minDim, 0, 0, CV_SCAN_SIZE, CV_SCAN_SIZE);
+            
+            const frame = cvCtx.getImageData(0, 0, CV_SCAN_SIZE, CV_SCAN_SIZE);
+            const data = frame.data;
+            const grayData = new Uint8Array(CV_SCAN_SIZE * CV_SCAN_SIZE);
+
+            // Convert to Grayscale
+            for (let i = 0; i < data.length; i += 4) {
+                // R=data[i], G=data[i+1], B=data[i+2]
+                grayData[i/4] = 0.299*data[i] + 0.587*data[i+1] + 0.114*data[i+2];
+            }
+            return grayData;
+        }
+
+        function compareFingerprints(fp1, fp2) {
+            // Sum of Absolute Differences (SAD)
+            let diff = 0;
+            for (let i = 0; i < fp1.length; i++) {
+                diff += Math.abs(fp1[i] - fp2[i]);
+            }
+            return diff / fp1.length; // Average difference per pixel (0-255)
+        }
+
+        // --------------------------------------------------------------------------
+        // 3. MAIN SETUP
         // --------------------------------------------------------------------------
         const video = document.getElementById('camera-feed');
         const canvas = document.getElementById('ar-overlay');
         const debug = document.getElementById('debug');
+        const snapStrip = document.getElementById('snapshot-strip');
+        const lockIndicator = document.getElementById('lock-indicator');
         
         const uiStep = document.getElementById('lbl-step');
         const uiDesc = document.getElementById('lbl-desc');
@@ -204,25 +279,23 @@
         let scene, camera, renderer, controls;
         let worldRoot, markerMesh;
         
-        let capturedRays = []; 
-        let stepIndex = 0; // 0=Init, 1=Center, 2=Left, 3=Right, 4=Low
-
-        // Virtual Camera Offsets (Meters)
-        const OFFSET_CENTER = new THREE.Vector3(0, 0, 0);
-        const OFFSET_LEFT   = new THREE.Vector3(-0.4, 0, 0);  // 40cm Left
-        const OFFSET_RIGHT  = new THREE.Vector3(0.4, 0, 0);   // 40cm Right
-        const OFFSET_LOW    = new THREE.Vector3(0, -0.5, 0);  // 50cm Down (Crouch)
+        let capturedPoints = []; // Stores { origin, direction, quaternion, visualData, thumbId }
+        let stepIndex = 0; 
+        let isSetupComplete = false;
 
         const raycaster = new THREE.Raycaster();
         const centerScreen = new THREE.Vector2(0, 0);
 
-        // --------------------------------------------------------------------------
-        // 3. INIT
-        // --------------------------------------------------------------------------
+        // Offsets
+        const OFFSET_CENTER = new THREE.Vector3(0, 0, 0);
+        const OFFSET_LEFT   = new THREE.Vector3(-0.4, 0, 0);
+        const OFFSET_RIGHT  = new THREE.Vector3(0.4, 0, 0);
+        const OFFSET_LOW    = new THREE.Vector3(0, -0.5, 0);
+
         async function initCamera() {
             try {
                 const stream = await navigator.mediaDevices.getUserMedia({
-                    video: { facingMode: 'environment', width: { ideal: 320 }, height: { ideal: 240 } },
+                    video: { facingMode: 'environment', width: { ideal: 640 }, height: { ideal: 480 } },
                     audio: false
                 });
                 video.srcObject = stream;
@@ -237,31 +310,25 @@
 
             camera = new THREE.PerspectiveCamera(80, window.innerWidth / window.innerHeight, 0.1, 100);
             
-            renderer = new THREE.WebGLRenderer({ canvas: canvas, alpha: true, antialias: false, precision: 'lowp' });
+            renderer = new THREE.WebGLRenderer({ canvas: canvas, alpha: true, antialias: false, precision: 'mediump' });
             renderer.setSize(window.innerWidth, window.innerHeight);
             renderer.setPixelRatio(1);
 
             scene.add(new THREE.AmbientLight(0xffffff, 2));
-            
             animate();
         }
 
-        // --------------------------------------------------------------------------
-        // 4. SIZE SLIDER LOGIC
-        // --------------------------------------------------------------------------
         slider.addEventListener('input', (e) => {
             const newSize = parseFloat(e.target.value);
             if (markerMesh) {
-                // Update Scale: X and Y scale, Z remains 1
                 markerMesh.scale.set(newSize, newSize, 1);
                 debug.innerText = `Size: ${(newSize * 100).toFixed(0)}cm`;
             }
         });
 
         // --------------------------------------------------------------------------
-        // 5. CALIBRATION LOGIC
+        // 4. INTERACTION
         // --------------------------------------------------------------------------
-        
         btnAction.addEventListener('click', () => {
             if (stepIndex === 0) {
                 if (typeof DeviceOrientationEvent?.requestPermission === 'function') {
@@ -275,26 +342,23 @@
         });
 
         btnFix.addEventListener('click', () => {
-            if (stepIndex !== 5) return;
+            if (!isSetupComplete) return;
+            // Manual Reset
             raycaster.setFromCamera(centerScreen, camera);
             const groundY = markerMesh.position.y;
             const origin = raycaster.ray.origin;
             const dir = raycaster.ray.direction;
             
             if (Math.abs(dir.y) < 0.01) return; 
-
             const t = (groundY - origin.y) / dir.y;
             if (t < 0) return; 
 
             const hitPoint = new THREE.Vector3().copy(origin).add(dir.multiplyScalar(t));
-
             markerMesh.position.x = hitPoint.x;
             markerMesh.position.z = hitPoint.z;
             
             markerMesh.material.color.setHex(0xFFFFFF);
             setTimeout(() => markerMesh.material.color.setHex(0x00FFFF), 150);
-            
-            debug.innerText = "Re-aligned.";
         });
 
         function startCalibration() {
@@ -306,29 +370,17 @@
 
         function updateUI() {
             dots.forEach(d => d.classList.remove('active'));
-            
-            if (stepIndex === 1) {
-                uiStep.innerText = "View 1: Center";
-                uiDesc.innerText = "Stand normal. Aim at target. Tap Capture.";
-                dots[0].classList.add('active');
-            } else if (stepIndex === 2) {
-                uiStep.innerText = "View 2: Step Left";
-                uiDesc.innerText = "Step LEFT (~40cm). Aim at SAME target.";
-                dots[1].classList.add('active');
-            } else if (stepIndex === 3) {
-                uiStep.innerText = "View 3: Step Right";
-                uiDesc.innerText = "Step RIGHT (~40cm past center). Aim at SAME target.";
-                dots[2].classList.add('active');
-            } else if (stepIndex === 4) {
-                uiStep.innerText = "View 4: Crouch/Low";
-                uiDesc.innerText = "Crouch down (~50cm). Aim at SAME target.";
-                dots[3].classList.add('active');
-            }
+            if (stepIndex === 1) { uiStep.innerText = "Center View"; dots[0].classList.add('active'); }
+            else if (stepIndex === 2) { uiStep.innerText = "Step Left (~40cm)"; dots[1].classList.add('active'); }
+            else if (stepIndex === 3) { uiStep.innerText = "Step Right (~40cm)"; dots[2].classList.add('active'); }
+            else if (stepIndex === 4) { uiStep.innerText = "Crouch Low"; dots[3].classList.add('active'); }
         }
 
         function captureStep() {
+            // 1. Math Data
             raycaster.setFromCamera(centerScreen, camera);
             const rawDir = raycaster.ray.direction.clone();
+            const currentQuat = camera.quaternion.clone(); // Capture the *raw* visual orientation
 
             let virtualOffset = new THREE.Vector3();
             if (stepIndex === 1) virtualOffset.copy(OFFSET_CENTER);
@@ -336,7 +388,27 @@
             if (stepIndex === 3) virtualOffset.copy(OFFSET_RIGHT);
             if (stepIndex === 4) virtualOffset.copy(OFFSET_LOW);
 
-            capturedRays.push({ origin: virtualOffset, direction: rawDir });
+            // 2. Visual Data (The "QR" equivalent)
+            const fingerprint = extractVisualFingerprint(video);
+
+            // 3. UI Thumbnail
+            const canvasSnap = document.createElement('canvas');
+            canvasSnap.width = 100; canvasSnap.height = 100;
+            canvasSnap.getContext('2d').drawImage(video, 0, 0, canvasSnap.width, canvasSnap.height);
+            const thumbImg = document.createElement('img');
+            thumbImg.src = canvasSnap.toDataURL();
+            thumbImg.className = 'snap-thumb';
+            thumbImg.id = `thumb-${stepIndex}`;
+            snapStrip.appendChild(thumbImg);
+
+            // 4. Store
+            capturedPoints.push({ 
+                origin: virtualOffset, 
+                direction: rawDir,
+                quaternion: currentQuat, 
+                visualData: fingerprint,
+                uiId: `thumb-${stepIndex}`
+            });
 
             stepIndex++;
             if (stepIndex > 4) {
@@ -346,16 +418,13 @@
             }
         }
 
-        // --------------------------------------------------------------------------
-        // 6. MATH (Least Squares)
-        // --------------------------------------------------------------------------
         function calculateIntersection() {
             let accumulatedPoint = new THREE.Vector3(0,0,0);
             let count = 0;
 
-            for (let i = 0; i < capturedRays.length; i++) {
-                for (let j = i + 1; j < capturedRays.length; j++) {
-                    const result = closestPointBetweenRays(capturedRays[i], capturedRays[j]);
+            for (let i = 0; i < capturedPoints.length; i++) {
+                for (let j = i + 1; j < capturedPoints.length; j++) {
+                    const result = closestPointBetweenRays(capturedPoints[i], capturedPoints[j]);
                     if (result) {
                         accumulatedPoint.add(result);
                         count++;
@@ -367,63 +436,96 @@
             else accumulatedPoint.set(0, -1.6, -2);
 
             placeSquare(accumulatedPoint);
-            finishSetup();
+            
+            isSetupComplete = true;
+            uiDots.style.display = 'none';
+            uiStep.innerText = "Tracking Active";
+            uiDesc.innerText = "Visual Engine: ON";
+            btnAction.style.display = 'none';
+            btnFix.style.display = 'block';
         }
 
         function closestPointBetweenRays(r1, r2) {
-            const p1 = r1.origin;
-            const d1 = r1.direction;
-            const p2 = r2.origin;
-            const d2 = r2.direction;
+            const p1 = r1.origin; const d1 = r1.direction;
+            const p2 = r2.origin; const d2 = r2.direction;
             const n = new THREE.Vector3().crossVectors(d1, d2);
             const n2 = n.lengthSq();
             if (n2 < 0.0001) return null;
             const d12 = new THREE.Vector3().subVectors(p2, p1);
-            const n_cross_d2 = new THREE.Vector3().crossVectors(d2, n);
-            const t = d12.dot(n_cross_d2) / n2;
-            const n_cross_d1 = new THREE.Vector3().crossVectors(d1, n);
-            const u = d12.dot(n_cross_d1) / n2;
-            const pointOnRay1 = p1.clone().add(d1.clone().multiplyScalar(t));
-            const pointOnRay2 = p2.clone().add(d2.clone().multiplyScalar(u));
-            return new THREE.Vector3().addVectors(pointOnRay1, pointOnRay2).multiplyScalar(0.5);
+            const t = d12.dot(new THREE.Vector3().crossVectors(d2, n)) / n2;
+            const u = d12.dot(new THREE.Vector3().crossVectors(d1, n)) / n2;
+            return new THREE.Vector3().addVectors(p1.clone().add(d1.clone().multiplyScalar(t)), p2.clone().add(d2.clone().multiplyScalar(u))).multiplyScalar(0.5);
         }
 
         function placeSquare(pos) {
-            // Using 1x1 Geometry allows direct scaling to meters
             const geo = new THREE.PlaneGeometry(1, 1); 
-            const mat = new THREE.MeshBasicMaterial({ 
-                color: 0x00ffff, side: THREE.DoubleSide, transparent: true, opacity: 0.8,
-                depthTest: false 
-            });
+            const mat = new THREE.MeshBasicMaterial({ color: 0x00ffff, side: THREE.DoubleSide, transparent: true, opacity: 0.8, depthTest: false });
             markerMesh = new THREE.Mesh(geo, mat);
             markerMesh.rotation.x = -Math.PI / 2;
-            markerMesh.renderOrder = 999;
-            
-            // Set Initial Size (20cm)
-            const initialSize = 0.2;
-            markerMesh.scale.set(initialSize, initialSize, 1);
-            
+            markerMesh.scale.set(0.2, 0.2, 1);
             markerMesh.position.copy(pos);
             worldRoot.add(markerMesh);
-
-            debug.innerText = `Placed at X:${pos.x.toFixed(1)} Y:${pos.y.toFixed(1)} Z:${pos.z.toFixed(1)}`;
-        }
-
-        function finishSetup() {
-            uiDots.style.display = 'none';
-            uiStep.innerText = "Tracking Active";
-            uiDesc.innerText = "Square Locked. Resize with slider.";
-            btnAction.style.display = 'none';
-            btnFix.style.display = 'block';
-            stepIndex = 5; 
         }
 
         // --------------------------------------------------------------------------
-        // 7. ANIMATION
+        // 5. ENGINE LOOP (MATH + VISION)
         // --------------------------------------------------------------------------
+        let frameCount = 0;
+
+        function runVisualLocalization() {
+            if (!isSetupComplete || capturedPoints.length === 0) return;
+
+            // Only run heavy CV every 5 frames (~12fps) to save battery
+            if (frameCount % 5 !== 0) return;
+
+            const currentQ = camera.quaternion;
+            const currentFingerprint = extractVisualFingerprint(video);
+
+            let bestMatchDiff = 999;
+            let bestMatchIdx = -1;
+
+            // 1. COARSE PASS: Check Sensors first (Math)
+            // Only compare pixels if we are looking in roughly the same direction (< 15 degrees)
+            for (let i = 0; i < capturedPoints.length; i++) {
+                const angleDiff = currentQ.angleTo(capturedPoints[i].quaternion);
+                if (angleDiff < 0.3) { // ~17 degrees
+                    // 2. FINE PASS: Check Visuals (CV)
+                    const diff = compareFingerprints(currentFingerprint, capturedPoints[i].visualData);
+                    if (diff < bestMatchDiff) {
+                        bestMatchDiff = diff;
+                        bestMatchIdx = i;
+                    }
+                }
+            }
+
+            // Reset UI
+            document.querySelectorAll('.snap-thumb').forEach(el => el.classList.remove('active-lock'));
+            lockIndicator.classList.remove('locked');
+
+            // 3. DECISION
+            if (bestMatchIdx !== -1 && bestMatchDiff < VISUAL_THRESHOLD) {
+                // VISUAL MATCH FOUND!
+                lockIndicator.classList.add('locked');
+                
+                const match = capturedPoints[bestMatchIdx];
+                document.getElementById(match.uiId).classList.add('active-lock');
+                
+                // Instruct Sensor Manager to drift-correct towards this snapshot
+                controls.correctDrift(match.quaternion);
+
+                debug.innerText = `LOCKED: View ${bestMatchIdx+1} (Diff: ${bestMatchDiff.toFixed(1)})`;
+            } else {
+                debug.innerText = `Searching... (Best: ${bestMatchDiff > 200 ? '-' : bestMatchDiff.toFixed(1)})`;
+            }
+        }
+
         function animate() {
             requestAnimationFrame(animate);
+            frameCount++;
+            
             if (controls) controls.update();
+            runVisualLocalization();
+            
             renderer.render(scene, camera);
         }
 
