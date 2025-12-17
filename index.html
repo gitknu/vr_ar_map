@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Precision AR: Sensor Fusion + Visual Anchor</title>
+    <title>Precision AR: Auto-Relocalization</title>
     <style>
         body { margin: 0; overflow: hidden; background-color: #000; font-family: monospace; }
         
@@ -344,6 +344,11 @@
         btnFix.addEventListener('click', () => {
             if (!isSetupComplete) return;
             // Manual Reset
+            manualFixLogic();
+        });
+
+        function manualFixLogic() {
+            if(!markerMesh) return;
             raycaster.setFromCamera(centerScreen, camera);
             const groundY = markerMesh.position.y;
             const origin = raycaster.ray.origin;
@@ -359,7 +364,7 @@
             
             markerMesh.material.color.setHex(0xFFFFFF);
             setTimeout(() => markerMesh.material.color.setHex(0x00FFFF), 150);
-        });
+        }
 
         function startCalibration() {
             controls = new OrientationManager(camera);
@@ -512,6 +517,27 @@
                 
                 // Instruct Sensor Manager to drift-correct towards this snapshot
                 controls.correctDrift(match.quaternion);
+
+                // --- NEW AUTO RELOCATION LOGIC ---
+                // Automatically centers the square on the view, just like the manual button
+                if (markerMesh) {
+                    raycaster.setFromCamera(centerScreen, camera);
+                    const groundY = markerMesh.position.y;
+                    const origin = raycaster.ray.origin;
+                    const dir = raycaster.ray.direction;
+                    
+                    if (Math.abs(dir.y) > 0.05) { 
+                        const t = (groundY - origin.y) / dir.y;
+                        if (t > 0) {
+                            const targetPos = new THREE.Vector3().copy(origin).add(dir.multiplyScalar(t));
+                            
+                            // Smoothly interpolate current marker position to the calculated center
+                            markerMesh.position.x += (targetPos.x - markerMesh.position.x) * 0.15;
+                            markerMesh.position.z += (targetPos.z - markerMesh.position.z) * 0.15;
+                        }
+                    }
+                }
+                // ---------------------------------
 
                 debug.innerText = `LOCKED: View ${bestMatchIdx+1} (Diff: ${bestMatchDiff.toFixed(1)})`;
             } else {
