@@ -3,17 +3,18 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Precision AR: Orbit Scan</title>
+    <title>Precision AR: Multi-Angle Capture</title>
     <style>
-        body { margin: 0; overflow: hidden; background-color: #000; font-family: monospace; }
+        body { margin: 0; overflow: hidden; background-color: #000; font-family: 'Courier New', Courier, monospace; }
         
-        /* CAMERA & CANVAS */
+        /* 1. CAMERA & CANVAS */
         #camera-feed {
             position: absolute; top: 50%; left: 50%;
             transform: translate(-50%, -50%);
             min-width: 100%; min-height: 100%;
             width: auto; height: auto;
-            z-index: 0; object-fit: cover; filter: contrast(1.1);
+            z-index: 0; object-fit: cover;
+            filter: contrast(1.1) brightness(1.1);
         }
         #ar-overlay {
             position: absolute; top: 0; left: 0;
@@ -21,105 +22,119 @@
             background: transparent;
         }
 
-        /* HUD ELEMENTS */
+        /* 2. HUD ELEMENTS */
         #crosshair {
             position: absolute; top: 50%; left: 50%;
-            width: 20px; height: 20px;
+            width: 40px; height: 40px;
             transform: translate(-50%, -50%);
-            border: 2px solid rgba(255, 255, 255, 0.8);
-            border-radius: 50%;
-            z-index: 10; pointer-events: none;
+            z-index: 5; pointer-events: none;
         }
-        #crosshair::after {
-            content: ''; position: absolute; top: 9px; left: 9px;
-            width: 2px; height: 2px; background: red;
+        #crosshair::before, #crosshair::after {
+            content: ''; position: absolute; background: #00ff00; box-shadow: 0 0 4px #000;
         }
-
-        /* TARGET GUIDE (The "Ghost" Circle) */
-        #guide-ring {
-            position: absolute; top: 50%; left: 50%;
-            width: 60px; height: 60px;
-            transform: translate(-50%, -50%);
-            border: 4px solid #00ff00;
-            border-radius: 50%;
-            z-index: 5;
-            display: none; /* Controlled by JS */
-            box-shadow: 0 0 10px #00ff00;
-            transition: width 0.1s, height 0.1s;
-        }
-        /* Direction Arrows */
-        #arrow-left, #arrow-right {
-            position: absolute; top: 50%; width: 0; height: 0; 
-            border-top: 20px solid transparent; border-bottom: 20px solid transparent;
-            z-index: 6; display: none; transform: translateY(-50%);
-        }
-        #arrow-left { left: 20px; border-right: 30px solid #00ff00; }
-        #arrow-right { right: 20px; border-left: 30px solid #00ff00; }
-
+        #crosshair::before { top: 19px; left: 0; width: 40px; height: 2px; }
+        #crosshair::after { top: 0; left: 19px; width: 2px; height: 40px; }
+        
+        /* Lock Indicator */
         #lock-indicator {
             position: absolute; top: 50%; left: 50%;
             width: 80px; height: 80px;
             transform: translate(-50%, -50%);
-            border: 2px solid cyan; border-radius: 50%;
-            z-index: 4; opacity: 0; transition: opacity 0.2s, transform 0.2s;
-            box-shadow: 0 0 15px cyan; pointer-events: none;
+            border: 2px dashed cyan;
+            border-radius: 50%;
+            z-index: 4; opacity: 0;
+            transition: all 0.2s;
+            box-shadow: 0 0 15px cyan;
+            pointer-events: none;
         }
-        #lock-indicator.locked { opacity: 1; transform: translate(-50%, -50%) scale(1.0); }
-
-        /* PROGRESS BAR */
-        #progress-container {
-            position: absolute; top: 20px; left: 50%; transform: translateX(-50%);
-            width: 200px; height: 8px; background: rgba(255,255,255,0.2);
-            border-radius: 4px; z-index: 20; display: none; overflow: hidden;
-        }
-        #progress-fill {
-            height: 100%; width: 0%; background: #00ff00; 
-            transition: width 0.3s;
+        #lock-indicator.locked { 
+            opacity: 1; 
+            border-style: solid;
+            transform: translate(-50%, -50%) scale(1.0); 
+            border-color: #00ff00;
+            box-shadow: 0 0 15px #00ff00;
         }
 
-        /* UI PANELS */
+        /* Guide Arrow (Animation) */
+        #guide-arrow {
+            position: absolute; top: 35%; left: 50%;
+            transform: translate(-50%, -50%);
+            font-size: 60px; color: rgba(255, 255, 0, 0.8);
+            z-index: 4; display: none;
+            text-shadow: 0 0 10px black;
+            animation: bounce 1s infinite;
+        }
+        @keyframes bounce { 0%, 100% { transform: translate(-50%, -50%) scale(1); } 50% { transform: translate(-50%, -60%) scale(1.1); } }
+
+        /* Snapshot Strip (Scrollable) */
+        #snapshot-strip {
+            position: absolute; top: 10px; left: 0; width: 100%; height: 70px;
+            z-index: 20; display: flex; align-items: center; 
+            overflow-x: auto; padding-left: 50%; 
+            /* Center the active item logic handled by scroll, but simplified here */
+            scroll-behavior: smooth;
+            pointer-events: none;
+        }
+        /* Hide scrollbar */
+        #snapshot-strip::-webkit-scrollbar { display: none; }
+        
+        .snap-thumb {
+            height: 50px; width: 50px; min-width: 50px; object-fit: cover;
+            border: 1px solid #444; border-radius: 6px; background: #000; 
+            opacity: 0.5; margin: 0 4px; transition: all 0.3s;
+        }
+        .snap-thumb.active-lock { 
+            border-color: #00ff00; opacity: 1; 
+            transform: scale(1.2); box-shadow: 0 0 10px #00ff00; 
+            z-index: 22;
+        }
+
+        /* 3. UI CONTROLS */
         #ui-layer {
             position: absolute; bottom: 30px; left: 0; width: 100%;
             z-index: 10; display: flex; flex-direction: column; align-items: center;
             pointer-events: none;
         }
         #panel {
-            background: rgba(0, 0, 0, 0.85); backdrop-filter: blur(8px);
-            padding: 20px; border-radius: 16px; text-align: center;
-            border: 1px solid rgba(255,255,255,0.2); width: 85%; max-width: 350px;
+            background: rgba(10, 10, 10, 0.9); backdrop-filter: blur(10px);
+            padding: 20px; border-radius: 20px; text-align: center;
+            border: 1px solid rgba(255,255,255,0.15); width: 85%; max-width: 400px;
             pointer-events: auto; transition: all 0.3s;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.5);
         }
-        #lbl-status { color: #00ff00; font-size: 14px; font-weight: bold; text-transform: uppercase; margin-bottom: 5px; display: block; }
-        #lbl-instruction { color: #fff; font-size: 15px; margin-bottom: 15px; display: block; line-height: 1.4; }
+        
+        /* Progress Bar */
+        #progress-container {
+            width: 100%; height: 4px; background: #333; margin-bottom: 15px;
+            border-radius: 2px; overflow: hidden;
+        }
+        #progress-fill {
+            height: 100%; width: 0%; background: #00ff00; 
+            transition: width 0.3s;
+        }
+
+        #lbl-step { color: #00ff00; font-size: 14px; font-weight: bold; text-transform: uppercase; margin-bottom: 5px; display: block; letter-spacing: 1px; }
+        #lbl-desc { color: #ddd; font-size: 15px; margin-bottom: 20px; display: block; line-height: 1.4; }
         
         button {
-            background: #fff; color: #000; border: none; padding: 12px 30px;
-            font-size: 16px; font-weight: 800; border-radius: 30px; cursor: pointer;
+            background: #fff; color: #000; border: none; padding: 14px 0;
+            font-size: 16px; font-weight: 800; border-radius: 8px; cursor: pointer;
             text-transform: uppercase; width: 100%;
-            transition: transform 0.1s;
+            box-shadow: 0 4px 0 #ccc; transition: transform 0.1s, box-shadow 0.1s;
         }
-        button:active { transform: scale(0.95); background: #ccc; }
+        button:active { transform: translateY(4px); box-shadow: 0 0 0 #ccc; }
         
-        #btn-fix { background: #FF9500; color: white; display: none; margin-top: 10px; font-size: 14px; }
+        #btn-action { background: #00ff00; box-shadow: 0 4px 0 #00aa00; }
+        #btn-action:active { box-shadow: 0 0 0 #00aa00; }
+        
+        #btn-fix { background: #FF9500; color: white; display: none; margin-top: 10px; font-size: 14px; box-shadow: 0 4px 0 #cc7a00; }
+        #btn-fix:active { box-shadow: 0 0 0 #cc7a00; }
 
-        /* DEBUG & SLIDER */
         #debug {
-            position: absolute; top: 5px; left: 5px;
+            position: absolute; top: 80px; left: 10px;
             color: lime; font-size: 10px; z-index: 20;
-            background: rgba(0,0,0,0.5); padding: 4px; pointer-events: none;
-        }
-        #slider-container {
-            position: absolute; top: 100px; right: 10px;
-            width: 30px; height: 150px; z-index: 20;
-            display: flex; align-items: center; justify-content: center;
-        }
-        input[type=range][orient=vertical] {
-            writing-mode: bt-lr; -webkit-appearance: slider-vertical;
-            width: 8px; height: 100%; padding: 0 5px;
-        }
-        #size-slider {
-            transform: rotate(-90deg); width: 150px; margin: 0;
-            background: rgba(255,255,255,0.2); border-radius: 5px; cursor: pointer;
+            background: rgba(0,0,0,0.6); padding: 5px; pointer-events: none;
+            white-space: pre-wrap; border-radius: 4px;
         }
     </style>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
@@ -129,46 +144,54 @@
     <video id="camera-feed" playsinline autoplay muted></video>
     <canvas id="ar-overlay"></canvas>
     
-    <!-- HUD -->
     <div id="crosshair"></div>
-    <div id="guide-ring"></div> <!-- The moving target -->
-    <div id="arrow-left"></div> <div id="arrow-right"></div>
     <div id="lock-indicator"></div>
-    <div id="progress-container"><div id="progress-fill"></div></div>
-    
+    <div id="guide-arrow">⬆</div> <!-- Animation Arrow -->
     <div id="debug">System Ready.</div>
-
-    <div id="slider-container">
-        <input type="range" id="size-slider" min="0.05" max="1.0" step="0.01" value="0.2">
-    </div>
+    
+    <div id="snapshot-strip"></div>
 
     <div id="ui-layer">
         <div id="panel">
-            <span id="lbl-status">Initialization</span>
-            <span id="lbl-instruction">Stand ~1m from object.<br>Tap START and follow the green circle.</span>
+            <div id="progress-container"><div id="progress-fill"></div></div>
+            <span id="lbl-step">INITIALIZATION</span>
+            <span id="lbl-desc">Calibrate sensors to begin.</span>
             <button id="btn-action">START SCAN</button>
-            <button id="btn-fix">MANUAL RE-CENTER</button>
+            <button id="btn-fix">RE-CENTER OBJECT</button>
         </div>
     </div>
 
     <script>
         // --------------------------------------------------------------------------
-        // CONFIGURATION
+        // CONFIGURATION: THE 10 STEPS
         // --------------------------------------------------------------------------
+        // These offsets approximate where the user stands relative to the starting point (0,0,0).
+        // This creates a "virtual cloud" of camera positions for triangulation.
+        const CAPTURE_STEPS = [
+            { id: 'front',      label: "1. Front Center",   desc: "Stand directly in front of the object.", arrow: "",          offset: new THREE.Vector3(0, 0, 0) },
+            { id: 'left',       label: "2. Move Left",      desc: "Step LEFT (~1m). Keep object centered.", arrow: "⬅",         offset: new THREE.Vector3(-0.8, 0, 0) },
+            { id: 'right',      label: "3. Move Right",     desc: "Step RIGHT (past center, ~1m).",         arrow: "➡",         offset: new THREE.Vector3(0.8, 0, 0) },
+            { id: 'back',       label: "4. Step Back",      desc: "Step BACK away from the object.",        arrow: "⬇",         offset: new THREE.Vector3(0, 0, 1.0) },
+            { id: 'bot_front',  label: "5. Low Angle",      desc: "Return to Center. Crouch DOWN.",         arrow: "⬇",         offset: new THREE.Vector3(0, -0.6, 0) },
+            { id: 'bot_left',   label: "6. Low Left",       desc: "Step LEFT while crouching.",             arrow: "⬅",         offset: new THREE.Vector3(-0.8, -0.6, 0) },
+            { id: 'iso_lf',     label: "7. High Left",      desc: "Stand UP. Step Left & Forward.",         arrow: "NO_ARROW",  offset: new THREE.Vector3(-0.5, 0.4, -0.5) },
+            { id: 'iso_rf',     label: "8. High Right",     desc: "Step Right & Forward.",                  arrow: "NO_ARROW",  offset: new THREE.Vector3(0.5, 0.4, -0.5) },
+            { id: 'iso_lb',     label: "9. Far Left",       desc: "Step Left & Back.",                      arrow: "NO_ARROW",  offset: new THREE.Vector3(-1.0, 0, 0.5) },
+            { id: 'iso_rb',     label: "10. Far Right",     desc: "Step Right & Back.",                     arrow: "NO_ARROW",  offset: new THREE.Vector3(1.0, 0, 0.5) }
+        ];
+
         const CV_SCAN_SIZE = 32; 
-        const VISUAL_THRESHOLD = 30; // Slightly looser to ensure matches
-        const ORBIT_RADIUS = 0.5; // Meters
-        const ANGLE_TOLERANCE = 0.15; // Radians (~8 degrees)
-        
+        const VISUAL_THRESHOLD = 30; // Slightly looser for better UX
+
         // --------------------------------------------------------------------------
-        // 1. SENSOR FUSION ENGINE
+        // 1. SENSOR FUSION (Orientation Logic)
         // --------------------------------------------------------------------------
         class OrientationManager {
             constructor(camera) {
                 this.camera = camera;
                 this.camera.rotation.reorder('YXZ');
                 this.enabled = false;
-                this.deviceOrientation = null;
+                this.deviceOrientation = {};
                 this.screenOrientation = 0;
                 
                 this.targetQ = new THREE.Quaternion();
@@ -176,8 +199,7 @@
                 this.q0 = new THREE.Quaternion();
                 this.q1 = new THREE.Quaternion(-Math.sqrt(0.5), 0, 0, Math.sqrt(0.5)); 
                 this.zee = new THREE.Vector3(0, 0, 1);
-                
-                this.visualCorrectionQ = new THREE.Quaternion(); 
+                this.visualCorrectionQ = new THREE.Quaternion();
 
                 window.addEventListener('deviceorientation', e => this.deviceOrientation = e);
                 window.addEventListener('orientationchange', () => this.screenOrientation = window.orientation || 0);
@@ -185,7 +207,7 @@
             }
 
             update() {
-                if (!this.enabled || !this.deviceOrientation || !this.deviceOrientation.alpha) return;
+                if (!this.enabled || !this.deviceOrientation.alpha) return;
 
                 const alpha = THREE.Math.degToRad(this.deviceOrientation.alpha || 0);
                 const beta = THREE.Math.degToRad(this.deviceOrientation.beta || 0);
@@ -198,29 +220,30 @@
                 this.targetQ.multiply(this.q0.setFromAxisAngle(this.zee, -orient));
 
                 let finalQ = this.targetQ.clone();
-                finalQ.premultiply(this.visualCorrectionQ); 
-                
-                this.camera.quaternion.slerp(finalQ, 0.5); // Faster response
+                finalQ.premultiply(this.visualCorrectionQ); // Apply Drift Correction
+                this.camera.quaternion.slerp(finalQ, 0.15); // Smooth movement
             }
 
             correctDrift(storedSnapshotQ) {
                 const sensorInv = this.targetQ.clone().invert();
                 const drift = storedSnapshotQ.clone().multiply(sensorInv);
-                this.visualCorrectionQ.slerp(drift, 0.05); 
+                this.visualCorrectionQ.slerp(drift, 0.08); 
             }
         }
 
         // --------------------------------------------------------------------------
-        // 2. COMPUTER VISION UTILS
+        // 2. COMPUTER VISION (Pixel Logic)
         // --------------------------------------------------------------------------
         const cvCanvas = document.createElement('canvas');
-        cvCanvas.width = CV_SCAN_SIZE; cvCanvas.height = CV_SCAN_SIZE;
+        cvCanvas.width = CV_SCAN_SIZE;
+        cvCanvas.height = CV_SCAN_SIZE;
         const cvCtx = cvCanvas.getContext('2d', { willReadFrequently: true });
 
         function extractVisualFingerprint(videoSource) {
-            if(videoSource.readyState < 2) return null;
             const vw = videoSource.videoWidth;
             const vh = videoSource.videoHeight;
+            if(vw === 0 || vh === 0) return null;
+
             const minDim = Math.min(vw, vh);
             const sx = (vw - minDim) / 2;
             const sy = (vh - minDim) / 2;
@@ -237,6 +260,7 @@
         }
 
         function compareFingerprints(fp1, fp2) {
+            if(!fp1 || !fp2) return 255;
             let diff = 0;
             for (let i = 0; i < fp1.length; i++) {
                 diff += Math.abs(fp1[i] - fp2[i]);
@@ -245,306 +269,31 @@
         }
 
         // --------------------------------------------------------------------------
-        // 3. APP STATE & GLOBALS
+        // 3. MAIN APP
         // --------------------------------------------------------------------------
         const video = document.getElementById('camera-feed');
         const canvas = document.getElementById('ar-overlay');
         const debug = document.getElementById('debug');
-        const guideRing = document.getElementById('guide-ring');
-        const arrowLeft = document.getElementById('arrow-left');
-        const arrowRight = document.getElementById('arrow-right');
-        const progressFill = document.getElementById('progress-fill');
-        const progressContainer = document.getElementById('progress-container');
+        const snapStrip = document.getElementById('snapshot-strip');
         const lockIndicator = document.getElementById('lock-indicator');
+        const guideArrow = document.getElementById('guide-arrow');
         
-        const uiStatus = document.getElementById('lbl-status');
-        const uiInstr = document.getElementById('lbl-instruction');
+        const uiStep = document.getElementById('lbl-step');
+        const uiDesc = document.getElementById('lbl-desc');
         const btnAction = document.getElementById('btn-action');
         const btnFix = document.getElementById('btn-fix');
-        const slider = document.getElementById('size-slider');
+        const progressFill = document.getElementById('progress-fill');
 
         let scene, camera, renderer, controls;
         let worldRoot, markerMesh;
-
-        let capturedPoints = []; 
-        let isScanning = false;
-        let isTracking = false;
-        let scanTargets = [];
-        let currentTargetIndex = 0;
-        let startQuaternion = new THREE.Quaternion(); // CRITICAL: Reference for relative movement
         
+        let capturedPoints = []; 
+        let stepIndex = 0; // 0=Init, 1..10=Capture, 11=Done
+        let isSetupComplete = false;
+
         const raycaster = new THREE.Raycaster();
         const centerScreen = new THREE.Vector2(0, 0);
 
-        // --------------------------------------------------------------------------
-        // 4. SCANNING LOGIC (Relative Orbit)
-        // --------------------------------------------------------------------------
-        
-        function generateScanTargets() {
-            // Yaw (Left/Right), Pitch (Up/Down) relative to START position
-            return [
-                { yaw: 0, pitch: 0, label: "Hold Center" },
-                { yaw: -0.2, pitch: 0, label: "Orbit Left" },
-                { yaw: -0.4, pitch: 0, label: "Orbit Left More" },
-                { yaw: -0.2, pitch: 0, label: "Return" },
-                { yaw: 0, pitch: 0, label: "Center" },
-                { yaw: 0.2, pitch: 0, label: "Orbit Right" },
-                { yaw: 0.4, pitch: 0, label: "Orbit Right More" },
-                { yaw: 0.2, pitch: 0, label: "Return" },
-                { yaw: 0, pitch: -0.2, label: "Look Down" },
-                { yaw: 0, pitch: 0, label: "Done" }
-            ];
-        }
-
-        function updateGuideVisuals() {
-            if (!isScanning || currentTargetIndex >= scanTargets.length) return;
-
-            const step = scanTargets[currentTargetIndex];
-            
-            // 1. Calculate Target Rotation in World Space (Relative to Start)
-            // Rotate the StartQuaternion by the Step Yaw/Pitch
-            const offsetEuler = new THREE.Euler(step.pitch, step.yaw, 0, 'YXZ');
-            const offsetQ = new THREE.Quaternion().setFromEuler(offsetEuler);
-            const globalTargetQ = startQuaternion.clone().multiply(offsetQ);
-
-            // 2. Check Alignment (Angle between Current Camera Q and Target Q)
-            const angleDiff = camera.quaternion.angleTo(globalTargetQ);
-            
-            // 3. Project Target to Screen for UI
-            // Create a point 1 meter in front of the TARGET rotation
-            const targetVec = new THREE.Vector3(0, 0, -1).applyQuaternion(globalTargetQ);
-            
-            // Project this 3D vector onto the 2D camera screen
-            // We clone it because project modifies the vector
-            const screenVec = targetVec.clone().project(camera); 
-            
-            // Check if target is behind us
-            const camForward = new THREE.Vector3(0, 0, -1).applyQuaternion(camera.quaternion);
-            const isInFront = camForward.dot(targetVec) > 0;
-
-            const x = (screenVec.x * 0.5 + 0.5) * window.innerWidth;
-            const y = -(screenVec.y * 0.5 - 0.5) * window.innerHeight;
-
-            // UI UPDATES
-            uiStatus.innerText = `Point ${currentTargetIndex + 1}/${scanTargets.length}`;
-            uiInstr.innerText = step.label;
-            progressContainer.style.display = 'block';
-            progressFill.style.width = `${(currentTargetIndex / scanTargets.length) * 100}%`;
-            
-            // ARROWS vs RING
-            arrowLeft.style.display = 'none';
-            arrowRight.style.display = 'none';
-            guideRing.style.display = 'none';
-
-            if (!isInFront) {
-                // Completely turned away
-                // Rough guess which way to turn
-                if (step.yaw < 0) arrowLeft.style.display = 'block';
-                else arrowRight.style.display = 'block';
-            } else if (screenVec.x < -0.9) {
-                arrowLeft.style.display = 'block';
-            } else if (screenVec.x > 0.9) {
-                arrowRight.style.display = 'block';
-            } else {
-                // Target is on screen
-                guideRing.style.display = 'block';
-                guideRing.style.transform = `translate(${x - 30}px, ${y - 30}px)`; // -30 is half of ring size (60)
-            }
-
-            // 4. Capture Logic
-            if (angleDiff < ANGLE_TOLERANCE) {
-                guideRing.style.borderColor = 'white';
-                guideRing.style.boxShadow = '0 0 15px white';
-                
-                if (!step.capturing) {
-                    step.capturing = true;
-                    // Wait a moment for stability then capture
-                    setTimeout(() => {
-                        // Re-check alignment before committing
-                        if (camera.quaternion.angleTo(globalTargetQ) < ANGLE_TOLERANCE + 0.05) {
-                            captureCurrentFrame(step, globalTargetQ);
-                            currentTargetIndex++;
-                            if (currentTargetIndex >= scanTargets.length) {
-                                finishScanning();
-                            }
-                        }
-                        step.capturing = false;
-                    }, 400); 
-                }
-            } else {
-                guideRing.style.borderColor = '#00ff00';
-                guideRing.style.boxShadow = '0 0 10px #00ff00';
-                step.capturing = false;
-            }
-        }
-
-        function captureCurrentFrame(step, targetQ) {
-            const fp = extractVisualFingerprint(video);
-            if(!fp) return;
-
-            const q = camera.quaternion.clone();
-            raycaster.setFromCamera(centerScreen, camera);
-            const dir = raycaster.ray.direction.clone();
-
-            // Parallax Math: Infer position based on Rotation relative to Start
-            // angleDiff from Start
-            const relativeQ = startQuaternion.clone().invert().multiply(q);
-            const relativeEuler = new THREE.Euler().setFromQuaternion(relativeQ, 'YXZ');
-            
-            const vOffset = new THREE.Vector3();
-            // Looking Right (-Y rotation) means I moved Left (-X)
-            vOffset.x = Math.sin(relativeEuler.y) * ORBIT_RADIUS; 
-            vOffset.z = (1 - Math.cos(relativeEuler.y)) * ORBIT_RADIUS; 
-            vOffset.y = Math.sin(relativeEuler.x) * ORBIT_RADIUS;
-
-            capturedPoints.push({
-                origin: vOffset,
-                direction: dir,
-                quaternion: q,
-                visualData: fp
-            });
-
-            // Flash effect
-            const flash = document.createElement('div');
-            flash.style.position='fixed'; flash.style.top=0; flash.style.left=0;
-            flash.style.width='100%'; flash.style.height='100%';
-            flash.style.background='white'; flash.style.opacity='0.4'; flash.style.zIndex='100';
-            document.body.appendChild(flash);
-            setTimeout(()=>flash.remove(), 100);
-        }
-
-        function finishScanning() {
-            isScanning = false;
-            guideRing.style.display = 'none';
-            progressContainer.style.display = 'none';
-            uiInstr.innerText = "Processing...";
-            
-            setTimeout(calculateWorldIntersection, 200);
-        }
-
-        function calculateWorldIntersection() {
-            let acc = new THREE.Vector3(0,0,0);
-            let count = 0;
-            
-            for(let i=0; i<capturedPoints.length; i++) {
-                for(let j=i+1; j<capturedPoints.length; j++) { 
-                    const pt = closestPointBetweenRays(capturedPoints[i], capturedPoints[j]);
-                    if(pt && pt.z < -0.2 && pt.length() < 5) { // Sanity check
-                        acc.add(pt);
-                        count++;
-                    }
-                }
-            }
-
-            if(count > 0) acc.divideScalar(count);
-            else acc.set(0, -1.0, -2); 
-
-            placeMarker(acc);
-            
-            isTracking = true;
-            uiStatus.innerText = "TRACKING ACTIVE";
-            uiInstr.innerText = "Move around. System will auto-correct.";
-            btnAction.style.display = 'none';
-            btnFix.style.display = 'block';
-        }
-
-        function closestPointBetweenRays(r1, r2) {
-            const p1 = r1.origin; const d1 = r1.direction;
-            const p2 = r2.origin; const d2 = r2.direction;
-            const n = new THREE.Vector3().crossVectors(d1, d2);
-            const n2 = n.lengthSq();
-            if (n2 < 0.0001) return null;
-            const d12 = new THREE.Vector3().subVectors(p2, p1);
-            const t = d12.dot(new THREE.Vector3().crossVectors(d2, n)) / n2;
-            const u = d12.dot(new THREE.Vector3().crossVectors(d1, n)) / n2;
-            return new THREE.Vector3().addVectors(p1.clone().add(d1.clone().multiplyScalar(t)), p2.clone().add(d2.clone().multiplyScalar(u))).multiplyScalar(0.5);
-        }
-
-        function placeMarker(pos) {
-            if(markerMesh) worldRoot.remove(markerMesh);
-            const geo = new THREE.PlaneGeometry(1, 1); 
-            const mat = new THREE.MeshBasicMaterial({ color: 0x00ffff, side: THREE.DoubleSide, transparent: true, opacity: 0.8, depthTest: false });
-            markerMesh = new THREE.Mesh(geo, mat);
-            markerMesh.rotation.x = -Math.PI / 2;
-            markerMesh.scale.set(0.2, 0.2, 1);
-            markerMesh.position.copy(pos);
-            worldRoot.add(markerMesh);
-        }
-
-        // --------------------------------------------------------------------------
-        // 5. MAIN LOOP
-        // --------------------------------------------------------------------------
-        let frameCount = 0;
-
-        function animate() {
-            requestAnimationFrame(animate);
-            frameCount++;
-            
-            if (controls) controls.update();
-            
-            if (isScanning) {
-                updateGuideVisuals();
-            }
-            
-            if (isTracking) {
-                runVisualLocalization();
-            }
-            
-            renderer.render(scene, camera);
-        }
-
-        function runVisualLocalization() {
-            if (frameCount % 4 !== 0) return;
-
-            const currentQ = camera.quaternion;
-            const currentFP = extractVisualFingerprint(video);
-            if(!currentFP) return;
-
-            let bestDiff = 999;
-            let bestIdx = -1;
-
-            // Search captured library
-            for (let i = 0; i < capturedPoints.length; i++) {
-                if (currentQ.angleTo(capturedPoints[i].quaternion) < 0.3) {
-                    const diff = compareFingerprints(currentFP, capturedPoints[i].visualData);
-                    if (diff < bestDiff) {
-                        bestDiff = diff;
-                        bestIdx = i;
-                    }
-                }
-            }
-
-            if (bestIdx !== -1 && bestDiff < VISUAL_THRESHOLD) {
-                lockIndicator.classList.add('locked');
-                controls.correctDrift(capturedPoints[bestIdx].quaternion);
-
-                // AUTO-RELOCATE MARKER
-                if (markerMesh) {
-                    raycaster.setFromCamera(centerScreen, camera);
-                    const origin = raycaster.ray.origin;
-                    const dir = raycaster.ray.direction;
-                    
-                    if (Math.abs(dir.y) > 0.05) {
-                        const groundY = markerMesh.position.y;
-                        const t = (groundY - origin.y) / dir.y;
-                        if (t > 0) {
-                            const visualHit = new THREE.Vector3().copy(origin).add(dir.multiplyScalar(t));
-                            if (visualHit.distanceTo(markerMesh.position) < 0.8) {
-                                markerMesh.position.lerp(visualHit, 0.05); // Smooth slide
-                            }
-                        }
-                    }
-                }
-                debug.innerText = `LOCKED: Frame ${bestIdx} (Err: ${bestDiff.toFixed(1)})`;
-            } else {
-                lockIndicator.classList.remove('locked');
-                debug.innerText = `Searching...`;
-            }
-        }
-
-        // --------------------------------------------------------------------------
-        // 6. INITIALIZATION
-        // --------------------------------------------------------------------------
         async function initCamera() {
             try {
                 const stream = await navigator.mediaDevices.getUserMedia({
@@ -561,7 +310,8 @@
             worldRoot = new THREE.Group();
             scene.add(worldRoot);
 
-            camera = new THREE.PerspectiveCamera(80, window.innerWidth / window.innerHeight, 0.1, 100);
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 100);
+            
             renderer = new THREE.WebGLRenderer({ canvas: canvas, alpha: true, antialias: false });
             renderer.setSize(window.innerWidth, window.innerHeight);
             renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
@@ -570,38 +320,287 @@
             animate();
         }
 
+        // --------------------------------------------------------------------------
+        // 4. INTERACTION FLOW
+        // --------------------------------------------------------------------------
         btnAction.addEventListener('click', () => {
-            if (typeof DeviceOrientationEvent?.requestPermission === 'function') {
-                DeviceOrientationEvent.requestPermission().then(r => { if(r==='granted') startScan(); });
-            } else {
-                startScan();
+            if (stepIndex === 0) {
+                // Request Sensors
+                if (typeof DeviceOrientationEvent?.requestPermission === 'function') {
+                    DeviceOrientationEvent.requestPermission().then(res => { if (res === 'granted') startCalibration(); });
+                } else {
+                    startCalibration();
+                }
+            } else if (stepIndex <= CAPTURE_STEPS.length) {
+                captureStep();
             }
         });
 
-        btnFix.addEventListener('click', () => {
-            if(markerMesh) markerMesh.position.set(0, -1, -2);
-        });
+        btnFix.addEventListener('click', manualFixLogic);
 
-        slider.addEventListener('input', (e) => {
-            const s = parseFloat(e.target.value);
-            if (markerMesh) markerMesh.scale.set(s,s,1);
-        });
-
-        function startScan() {
+        function startCalibration() {
             controls = new OrientationManager(camera);
             controls.enabled = true;
+            stepIndex = 1;
+            btnAction.innerText = "CAPTURE";
+            updateUI();
+        }
+
+        function updateUI() {
+            if(stepIndex > CAPTURE_STEPS.length) return;
+
+            const cfg = CAPTURE_STEPS[stepIndex - 1];
+            uiStep.innerText = `${cfg.label} (${stepIndex}/${CAPTURE_STEPS.length})`;
+            uiDesc.innerText = cfg.desc;
             
-            // Allow sensor to settle for 200ms before taking the "Zero" reading
-            uiStatus.innerText = "Calibrating Sensors...";
-            setTimeout(() => {
-                startQuaternion.copy(camera.quaternion); // LOCK REFERENCE FRAME
-                capturedPoints = [];
-                scanTargets = generateScanTargets();
-                currentTargetIndex = 0;
-                isScanning = true;
-                isTracking = false;
-                btnAction.style.display = 'none';
-            }, 200);
+            // Update Progress Bar
+            const pct = ((stepIndex - 1) / CAPTURE_STEPS.length) * 100;
+            progressFill.style.width = `${pct}%`;
+
+            // Guide Arrow Logic
+            if(cfg.arrow && cfg.arrow !== "NO_ARROW") {
+                guideArrow.style.display = 'block';
+                guideArrow.innerText = cfg.arrow;
+                
+                // Simple Rotation based on type
+                if(cfg.arrow === "⬅") guideArrow.style.transform = "translate(-50%, -50%) rotate(0deg)";
+                if(cfg.arrow === "➡") guideArrow.style.transform = "translate(-50%, -50%) rotate(0deg)";
+                if(cfg.arrow === "⬇") guideArrow.style.transform = "translate(-50%, -50%) rotate(0deg)";
+            } else {
+                guideArrow.style.display = 'none';
+            }
+        }
+
+        function captureStep() {
+            const cfg = CAPTURE_STEPS[stepIndex - 1];
+
+            // 1. Math Data
+            raycaster.setFromCamera(centerScreen, camera);
+            const rawDir = raycaster.ray.direction.clone();
+            const currentQuat = camera.quaternion.clone();
+
+            // 2. Visual Data
+            const fingerprint = extractVisualFingerprint(video);
+            if(!fingerprint) return; // Video not ready
+
+            // 3. Generate Thumbnail UI
+            const canvasSnap = document.createElement('canvas');
+            canvasSnap.width = 64; canvasSnap.height = 64;
+            // Draw center crop
+            const vRatio = video.videoWidth / video.videoHeight;
+            let sx=0, sy=0, sWidth=video.videoWidth, sHeight=video.videoHeight;
+            if(vRatio > 1) { sx = (video.videoWidth - video.videoHeight)/2; sWidth = video.videoHeight; }
+            else { sy = (video.videoHeight - video.videoWidth)/2; sHeight = video.videoWidth; }
+            
+            canvasSnap.getContext('2d').drawImage(video, sx, sy, sWidth, sHeight, 0, 0, 64, 64);
+            
+            const thumbImg = document.createElement('img');
+            thumbImg.src = canvasSnap.toDataURL();
+            thumbImg.className = 'snap-thumb';
+            thumbImg.id = `thumb-${stepIndex}`;
+            snapStrip.appendChild(thumbImg);
+            
+            // Auto scroll strip
+            snapStrip.scrollLeft = snapStrip.scrollWidth;
+
+            // 4. Store Data
+            capturedPoints.push({ 
+                origin: cfg.offset.clone(), // This is the Virtual Position
+                direction: rawDir,
+                quaternion: currentQuat, 
+                visualData: fingerprint,
+                uiId: `thumb-${stepIndex}`
+            });
+
+            stepIndex++;
+            if (stepIndex > CAPTURE_STEPS.length) {
+                finalizeSetup();
+            } else {
+                updateUI();
+            }
+        }
+
+        function finalizeSetup() {
+            guideArrow.style.display = 'none';
+            progressFill.style.width = '100%';
+            
+            calculateIntersection();
+
+            isSetupComplete = true;
+            uiStep.innerText = "TRACKING ACTIVE";
+            uiDesc.innerText = "System Locked. Move freely.";
+            btnAction.style.display = 'none';
+            btnFix.style.display = 'block';
+        }
+
+        // --------------------------------------------------------------------------
+        // 5. MATH (Triangulation)
+        // --------------------------------------------------------------------------
+        function calculateIntersection() {
+            let accumulatedPoint = new THREE.Vector3(0,0,0);
+            let count = 0;
+
+            // Compare every ray against every other ray to find closest approach
+            for (let i = 0; i < capturedPoints.length; i++) {
+                for (let j = i + 1; j < capturedPoints.length; j++) {
+                    const result = closestPointBetweenRays(capturedPoints[i], capturedPoints[j]);
+                    if (result) {
+                        accumulatedPoint.add(result);
+                        count++;
+                    }
+                }
+            }
+
+            if (count > 0) accumulatedPoint.divideScalar(count);
+            else accumulatedPoint.set(0, -1.0, -2); // Fallback
+
+            placeObject(accumulatedPoint);
+        }
+
+        function closestPointBetweenRays(r1, r2) {
+            const p1 = r1.origin; const d1 = r1.direction;
+            const p2 = r2.origin; const d2 = r2.direction;
+            
+            const n = new THREE.Vector3().crossVectors(d1, d2);
+            const n2 = n.lengthSq();
+            
+            // If rays are parallel, ignore
+            if (n2 < 0.001) return null;
+
+            const d12 = new THREE.Vector3().subVectors(p2, p1);
+            const t = d12.dot(new THREE.Vector3().crossVectors(d2, n)) / n2;
+            const u = d12.dot(new THREE.Vector3().crossVectors(d1, n)) / n2;
+
+            // Point on ray 1: p1 + t*d1
+            // Point on ray 2: p2 + u*d2
+            // Midpoint:
+            const pos1 = p1.clone().add(d1.clone().multiplyScalar(t));
+            const pos2 = p2.clone().add(d2.clone().multiplyScalar(u));
+            return new THREE.Vector3().addVectors(pos1, pos2).multiplyScalar(0.5);
+        }
+
+        function placeObject(pos) {
+            const geo = new THREE.PlaneGeometry(1, 1); 
+            // Cyan target grid
+            const mat = new THREE.MeshBasicMaterial({ color: 0x00ffff, side: THREE.DoubleSide, transparent: true, opacity: 0.7, wireframe: false });
+            
+            markerMesh = new THREE.Mesh(geo, mat);
+            // Orient flat relative to camera view roughly, or flat on ground?
+            // Usually AR objects are placed upright or flat. Let's do flat.
+            markerMesh.rotation.x = -Math.PI / 2;
+            markerMesh.scale.set(0.3, 0.3, 1);
+            markerMesh.position.copy(pos);
+            
+            // Add a wireframe box around it for depth
+            const boxGeo = new THREE.BoxGeometry(1,1,1);
+            const boxMat = new THREE.MeshBasicMaterial({ color: 0xffffff, wireframe: true, transparent:true, opacity: 0.3});
+            const box = new THREE.Mesh(boxGeo, boxMat);
+            box.position.z = 0.5; // sit on top of plane
+            markerMesh.add(box);
+
+            worldRoot.add(markerMesh);
+        }
+
+        function manualFixLogic() {
+            if(!markerMesh) return;
+            raycaster.setFromCamera(centerScreen, camera);
+            const groundY = markerMesh.position.y;
+            const origin = raycaster.ray.origin;
+            const dir = raycaster.ray.direction;
+            
+            if (Math.abs(dir.y) < 0.01) return; 
+            const t = (groundY - origin.y) / dir.y;
+            if (t < 0) return; 
+
+            const hitPoint = new THREE.Vector3().copy(origin).add(dir.multiplyScalar(t));
+            markerMesh.position.x = hitPoint.x;
+            markerMesh.position.z = hitPoint.z;
+            
+            // Visual feedback
+            markerMesh.material.color.setHex(0xFFFFFF);
+            setTimeout(() => markerMesh.material.color.setHex(0x00FFFF), 200);
+        }
+
+        // --------------------------------------------------------------------------
+        // 6. ENGINE LOOP
+        // --------------------------------------------------------------------------
+        let frameCount = 0;
+
+        function runVisualLocalization() {
+            if (!isSetupComplete || capturedPoints.length === 0) return;
+
+            // Optimization: Run CV every 5 frames
+            if (frameCount % 5 !== 0) return;
+
+            const currentQ = camera.quaternion;
+            const currentFingerprint = extractVisualFingerprint(video);
+
+            let bestMatchDiff = 999;
+            let bestMatchIdx = -1;
+
+            // 1. ANGLE FILTER: Only check snapshots where angle is similar (< 25 degrees)
+            // This saves CPU by not comparing pixels for views behind us
+            for (let i = 0; i < capturedPoints.length; i++) {
+                const angleDiff = currentQ.angleTo(capturedPoints[i].quaternion);
+                
+                if (angleDiff < 0.45) { // ~25 degrees
+                    // 2. PIXEL CHECK
+                    const diff = compareFingerprints(currentFingerprint, capturedPoints[i].visualData);
+                    if (diff < bestMatchDiff) {
+                        bestMatchDiff = diff;
+                        bestMatchIdx = i;
+                    }
+                }
+            }
+
+            // UI Reset
+            document.querySelectorAll('.snap-thumb').forEach(el => el.classList.remove('active-lock'));
+            lockIndicator.classList.remove('locked');
+
+            // 3. LOCK LOGIC
+            if (bestMatchIdx !== -1 && bestMatchDiff < VISUAL_THRESHOLD) {
+                // Visual Match!
+                lockIndicator.classList.add('locked');
+                const match = capturedPoints[bestMatchIdx];
+                const thumb = document.getElementById(match.uiId);
+                if(thumb) thumb.classList.add('active-lock');
+                
+                // Drift Correction
+                controls.correctDrift(match.quaternion);
+
+                // Auto-Centering (Subtle)
+                // If we are locked onto a view, we know roughly where the object SHOULD be in 2D space
+                if (markerMesh) {
+                    raycaster.setFromCamera(centerScreen, camera);
+                    const groundY = markerMesh.position.y;
+                    const origin = raycaster.ray.origin;
+                    const dir = raycaster.ray.direction;
+                    
+                    if (Math.abs(dir.y) > 0.05) { 
+                        const t = (groundY - origin.y) / dir.y;
+                        if (t > 0) {
+                            const targetPos = new THREE.Vector3().copy(origin).add(dir.multiplyScalar(t));
+                            // Very gentle lerp to correct position drift
+                            markerMesh.position.x += (targetPos.x - markerMesh.position.x) * 0.1;
+                            markerMesh.position.z += (targetPos.z - markerMesh.position.z) * 0.1;
+                        }
+                    }
+                }
+
+                debug.innerText = `LOCKED: Shot ${bestMatchIdx+1} | Diff: ${bestMatchDiff.toFixed(1)}`;
+            } else {
+                debug.innerText = `Searching... Best: ${bestMatchDiff > 200 ? '-' : bestMatchDiff.toFixed(1)}`;
+            }
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+            frameCount++;
+            
+            if (controls) controls.update();
+            runVisualLocalization();
+            
+            renderer.render(scene, camera);
         }
 
         window.addEventListener('resize', () => {
