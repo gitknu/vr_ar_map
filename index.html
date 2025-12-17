@@ -71,11 +71,9 @@
             position: absolute; top: 10px; left: 0; width: 100%; height: 70px;
             z-index: 20; display: flex; align-items: center; 
             overflow-x: auto; padding-left: 50%; 
-            /* Center the active item logic handled by scroll, but simplified here */
             scroll-behavior: smooth;
             pointer-events: none;
         }
-        /* Hide scrollbar */
         #snapshot-strip::-webkit-scrollbar { display: none; }
         
         .snap-thumb {
@@ -89,7 +87,27 @@
             z-index: 22;
         }
 
-        /* 3. UI CONTROLS */
+        /* 3. SIZE SLIDER (Restored) */
+        #slider-container {
+            position: absolute; top: 120px; right: 10px;
+            width: 30px; height: 180px; z-index: 20;
+            display: flex; align-items: center; justify-content: center;
+        }
+        input[type=range][orient=vertical] {
+            writing-mode: bt-lr; -webkit-appearance: slider-vertical;
+            width: 8px; height: 100%; padding: 0 5px;
+        }
+        #size-slider {
+            transform: rotate(-90deg); width: 160px; margin: 0;
+            background: rgba(255,255,255,0.2); border-radius: 5px; cursor: pointer;
+        }
+        #slider-label {
+            position: absolute; top: 100px; right: 15px;
+            color: #00ffff; font-size: 12px; font-weight: bold;
+            z-index: 20; pointer-events: none; text-shadow: 1px 1px 2px black;
+        }
+
+        /* 4. UI CONTROLS */
         #ui-layer {
             position: absolute; bottom: 30px; left: 0; width: 100%;
             z-index: 10; display: flex; flex-direction: column; align-items: center;
@@ -146,10 +164,17 @@
     
     <div id="crosshair"></div>
     <div id="lock-indicator"></div>
-    <div id="guide-arrow">⬆</div> <!-- Animation Arrow -->
+    <div id="guide-arrow">⬆</div>
     <div id="debug">System Ready.</div>
     
     <div id="snapshot-strip"></div>
+
+    <!-- Restored Slider -->
+    <div id="slider-label">SIZE</div>
+    <div id="slider-container">
+        <!-- Changed default to 0.5 so it's visible, range 0.05 to 2.0 -->
+        <input type="range" id="size-slider" min="0.05" max="2.0" step="0.01" value="0.5">
+    </div>
 
     <div id="ui-layer">
         <div id="panel">
@@ -165,8 +190,6 @@
         // --------------------------------------------------------------------------
         // CONFIGURATION: THE 10 STEPS
         // --------------------------------------------------------------------------
-        // These offsets approximate where the user stands relative to the starting point (0,0,0).
-        // This creates a "virtual cloud" of camera positions for triangulation.
         const CAPTURE_STEPS = [
             { id: 'front',      label: "1. Front Center",   desc: "Stand directly in front of the object.", arrow: "",          offset: new THREE.Vector3(0, 0, 0) },
             { id: 'left',       label: "2. Move Left",      desc: "Step LEFT (~1m). Keep object centered.", arrow: "⬅",         offset: new THREE.Vector3(-0.8, 0, 0) },
@@ -181,10 +204,10 @@
         ];
 
         const CV_SCAN_SIZE = 32; 
-        const VISUAL_THRESHOLD = 30; // Slightly looser for better UX
+        const VISUAL_THRESHOLD = 30; 
 
         // --------------------------------------------------------------------------
-        // 1. SENSOR FUSION (Orientation Logic)
+        // 1. SENSOR FUSION
         // --------------------------------------------------------------------------
         class OrientationManager {
             constructor(camera) {
@@ -220,8 +243,8 @@
                 this.targetQ.multiply(this.q0.setFromAxisAngle(this.zee, -orient));
 
                 let finalQ = this.targetQ.clone();
-                finalQ.premultiply(this.visualCorrectionQ); // Apply Drift Correction
-                this.camera.quaternion.slerp(finalQ, 0.15); // Smooth movement
+                finalQ.premultiply(this.visualCorrectionQ); 
+                this.camera.quaternion.slerp(finalQ, 0.15); 
             }
 
             correctDrift(storedSnapshotQ) {
@@ -232,7 +255,7 @@
         }
 
         // --------------------------------------------------------------------------
-        // 2. COMPUTER VISION (Pixel Logic)
+        // 2. COMPUTER VISION
         // --------------------------------------------------------------------------
         const cvCanvas = document.createElement('canvas');
         cvCanvas.width = CV_SCAN_SIZE;
@@ -283,12 +306,15 @@
         const btnAction = document.getElementById('btn-action');
         const btnFix = document.getElementById('btn-fix');
         const progressFill = document.getElementById('progress-fill');
+        
+        // Slider Element
+        const slider = document.getElementById('size-slider');
 
         let scene, camera, renderer, controls;
         let worldRoot, markerMesh;
         
         let capturedPoints = []; 
-        let stepIndex = 0; // 0=Init, 1..10=Capture, 11=Done
+        let stepIndex = 0; 
         let isSetupComplete = false;
 
         const raycaster = new THREE.Raycaster();
@@ -320,12 +346,20 @@
             animate();
         }
 
+        // Slider Interaction (Restored)
+        slider.addEventListener('input', (e) => {
+            const newSize = parseFloat(e.target.value);
+            if (markerMesh) {
+                markerMesh.scale.set(newSize, newSize, 1);
+                debug.innerText = `Size: ${(newSize * 100).toFixed(0)}cm`;
+            }
+        });
+
         // --------------------------------------------------------------------------
         // 4. INTERACTION FLOW
         // --------------------------------------------------------------------------
         btnAction.addEventListener('click', () => {
             if (stepIndex === 0) {
-                // Request Sensors
                 if (typeof DeviceOrientationEvent?.requestPermission === 'function') {
                     DeviceOrientationEvent.requestPermission().then(res => { if (res === 'granted') startCalibration(); });
                 } else {
@@ -353,16 +387,12 @@
             uiStep.innerText = `${cfg.label} (${stepIndex}/${CAPTURE_STEPS.length})`;
             uiDesc.innerText = cfg.desc;
             
-            // Update Progress Bar
             const pct = ((stepIndex - 1) / CAPTURE_STEPS.length) * 100;
             progressFill.style.width = `${pct}%`;
 
-            // Guide Arrow Logic
             if(cfg.arrow && cfg.arrow !== "NO_ARROW") {
                 guideArrow.style.display = 'block';
                 guideArrow.innerText = cfg.arrow;
-                
-                // Simple Rotation based on type
                 if(cfg.arrow === "⬅") guideArrow.style.transform = "translate(-50%, -50%) rotate(0deg)";
                 if(cfg.arrow === "➡") guideArrow.style.transform = "translate(-50%, -50%) rotate(0deg)";
                 if(cfg.arrow === "⬇") guideArrow.style.transform = "translate(-50%, -50%) rotate(0deg)";
@@ -374,19 +404,15 @@
         function captureStep() {
             const cfg = CAPTURE_STEPS[stepIndex - 1];
 
-            // 1. Math Data
             raycaster.setFromCamera(centerScreen, camera);
             const rawDir = raycaster.ray.direction.clone();
             const currentQuat = camera.quaternion.clone();
 
-            // 2. Visual Data
             const fingerprint = extractVisualFingerprint(video);
-            if(!fingerprint) return; // Video not ready
+            if(!fingerprint) return; 
 
-            // 3. Generate Thumbnail UI
             const canvasSnap = document.createElement('canvas');
             canvasSnap.width = 64; canvasSnap.height = 64;
-            // Draw center crop
             const vRatio = video.videoWidth / video.videoHeight;
             let sx=0, sy=0, sWidth=video.videoWidth, sHeight=video.videoHeight;
             if(vRatio > 1) { sx = (video.videoWidth - video.videoHeight)/2; sWidth = video.videoHeight; }
@@ -399,13 +425,10 @@
             thumbImg.className = 'snap-thumb';
             thumbImg.id = `thumb-${stepIndex}`;
             snapStrip.appendChild(thumbImg);
-            
-            // Auto scroll strip
             snapStrip.scrollLeft = snapStrip.scrollWidth;
 
-            // 4. Store Data
             capturedPoints.push({ 
-                origin: cfg.offset.clone(), // This is the Virtual Position
+                origin: cfg.offset.clone(), 
                 direction: rawDir,
                 quaternion: currentQuat, 
                 visualData: fingerprint,
@@ -440,7 +463,6 @@
             let accumulatedPoint = new THREE.Vector3(0,0,0);
             let count = 0;
 
-            // Compare every ray against every other ray to find closest approach
             for (let i = 0; i < capturedPoints.length; i++) {
                 for (let j = i + 1; j < capturedPoints.length; j++) {
                     const result = closestPointBetweenRays(capturedPoints[i], capturedPoints[j]);
@@ -452,7 +474,7 @@
             }
 
             if (count > 0) accumulatedPoint.divideScalar(count);
-            else accumulatedPoint.set(0, -1.0, -2); // Fallback
+            else accumulatedPoint.set(0, -1.0, -2); 
 
             placeObject(accumulatedPoint);
         }
@@ -460,20 +482,12 @@
         function closestPointBetweenRays(r1, r2) {
             const p1 = r1.origin; const d1 = r1.direction;
             const p2 = r2.origin; const d2 = r2.direction;
-            
             const n = new THREE.Vector3().crossVectors(d1, d2);
             const n2 = n.lengthSq();
-            
-            // If rays are parallel, ignore
             if (n2 < 0.001) return null;
-
             const d12 = new THREE.Vector3().subVectors(p2, p1);
             const t = d12.dot(new THREE.Vector3().crossVectors(d2, n)) / n2;
             const u = d12.dot(new THREE.Vector3().crossVectors(d1, n)) / n2;
-
-            // Point on ray 1: p1 + t*d1
-            // Point on ray 2: p2 + u*d2
-            // Midpoint:
             const pos1 = p1.clone().add(d1.clone().multiplyScalar(t));
             const pos2 = p2.clone().add(d2.clone().multiplyScalar(u));
             return new THREE.Vector3().addVectors(pos1, pos2).multiplyScalar(0.5);
@@ -481,21 +495,21 @@
 
         function placeObject(pos) {
             const geo = new THREE.PlaneGeometry(1, 1); 
-            // Cyan target grid
             const mat = new THREE.MeshBasicMaterial({ color: 0x00ffff, side: THREE.DoubleSide, transparent: true, opacity: 0.7, wireframe: false });
             
             markerMesh = new THREE.Mesh(geo, mat);
-            // Orient flat relative to camera view roughly, or flat on ground?
-            // Usually AR objects are placed upright or flat. Let's do flat.
             markerMesh.rotation.x = -Math.PI / 2;
-            markerMesh.scale.set(0.3, 0.3, 1);
+            
+            // Apply Slider Size (Default 0.5)
+            const initialSize = parseFloat(slider.value);
+            markerMesh.scale.set(initialSize, initialSize, 1);
+            
             markerMesh.position.copy(pos);
             
-            // Add a wireframe box around it for depth
             const boxGeo = new THREE.BoxGeometry(1,1,1);
             const boxMat = new THREE.MeshBasicMaterial({ color: 0xffffff, wireframe: true, transparent:true, opacity: 0.3});
             const box = new THREE.Mesh(boxGeo, boxMat);
-            box.position.z = 0.5; // sit on top of plane
+            box.position.z = 0.5; 
             markerMesh.add(box);
 
             worldRoot.add(markerMesh);
@@ -516,7 +530,6 @@
             markerMesh.position.x = hitPoint.x;
             markerMesh.position.z = hitPoint.z;
             
-            // Visual feedback
             markerMesh.material.color.setHex(0xFFFFFF);
             setTimeout(() => markerMesh.material.color.setHex(0x00FFFF), 200);
         }
@@ -529,7 +542,6 @@
         function runVisualLocalization() {
             if (!isSetupComplete || capturedPoints.length === 0) return;
 
-            // Optimization: Run CV every 5 frames
             if (frameCount % 5 !== 0) return;
 
             const currentQ = camera.quaternion;
@@ -538,13 +550,10 @@
             let bestMatchDiff = 999;
             let bestMatchIdx = -1;
 
-            // 1. ANGLE FILTER: Only check snapshots where angle is similar (< 25 degrees)
-            // This saves CPU by not comparing pixels for views behind us
             for (let i = 0; i < capturedPoints.length; i++) {
                 const angleDiff = currentQ.angleTo(capturedPoints[i].quaternion);
                 
-                if (angleDiff < 0.45) { // ~25 degrees
-                    // 2. PIXEL CHECK
+                if (angleDiff < 0.45) { 
                     const diff = compareFingerprints(currentFingerprint, capturedPoints[i].visualData);
                     if (diff < bestMatchDiff) {
                         bestMatchDiff = diff;
@@ -553,23 +562,17 @@
                 }
             }
 
-            // UI Reset
             document.querySelectorAll('.snap-thumb').forEach(el => el.classList.remove('active-lock'));
             lockIndicator.classList.remove('locked');
 
-            // 3. LOCK LOGIC
             if (bestMatchIdx !== -1 && bestMatchDiff < VISUAL_THRESHOLD) {
-                // Visual Match!
                 lockIndicator.classList.add('locked');
                 const match = capturedPoints[bestMatchIdx];
                 const thumb = document.getElementById(match.uiId);
                 if(thumb) thumb.classList.add('active-lock');
                 
-                // Drift Correction
                 controls.correctDrift(match.quaternion);
 
-                // Auto-Centering (Subtle)
-                // If we are locked onto a view, we know roughly where the object SHOULD be in 2D space
                 if (markerMesh) {
                     raycaster.setFromCamera(centerScreen, camera);
                     const groundY = markerMesh.position.y;
@@ -580,13 +583,11 @@
                         const t = (groundY - origin.y) / dir.y;
                         if (t > 0) {
                             const targetPos = new THREE.Vector3().copy(origin).add(dir.multiplyScalar(t));
-                            // Very gentle lerp to correct position drift
                             markerMesh.position.x += (targetPos.x - markerMesh.position.x) * 0.1;
                             markerMesh.position.z += (targetPos.z - markerMesh.position.z) * 0.1;
                         }
                     }
                 }
-
                 debug.innerText = `LOCKED: Shot ${bestMatchIdx+1} | Diff: ${bestMatchDiff.toFixed(1)}`;
             } else {
                 debug.innerText = `Searching... Best: ${bestMatchDiff > 200 ? '-' : bestMatchDiff.toFixed(1)}`;
