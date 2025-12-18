@@ -219,16 +219,16 @@
         // CONFIGURATION: THE 10 STEPS
         // --------------------------------------------------------------------------
         const CAPTURE_STEPS = [
-            { id: 'front',      label: "1. Центр",       desc: "Станьте прямо перед об'єктом.",          arrow: "",          offset: new THREE.Vector3(0, 0, 0) },
-            { id: 'left',       label: "2. Рух вліво",   desc: "Крок ВЛІВО (~1м). Об'єкт по центру.",    arrow: "⬅",         offset: new THREE.Vector3(-0.8, 0, 0) },
-            { id: 'right',      label: "3. Рух вправо",  desc: "Крок ВПРАВО (через центр, ~1м).",        arrow: "➡",         offset: new THREE.Vector3(0.8, 0, 0) },
-            { id: 'back',       label: "4. Крок назад",  desc: "Зробіть крок НАЗАД від об'єкта.",        arrow: "⬇",         offset: new THREE.Vector3(0, 0, 1.0) },
-            { id: 'bot_front',  label: "5. Знизу",       desc: "Поверніться в центр. ПРИСЯДЬТЕ.",        arrow: "⬇",         offset: new THREE.Vector3(0, -0.6, 0) },
-            { id: 'bot_left',   label: "6. Знизу-зліва",  desc: "Крок ВЛІВО, залишаючись сидячи.",        arrow: "⬅",         offset: new THREE.Vector3(-0.8, -0.6, 0) },
-            { id: 'iso_lf',     label: "7. Згори-зліва попереду",   desc: "ВСТАНЬТЕ. Крок вліво і вперед.",         arrow: "NO_ARROW",  offset: new THREE.Vector3(-0.5, 0.4, -0.5) },
-            { id: 'iso_rf',     label: "8. Згори-справа попереду",  desc: "Крок вправо і вперед.",                  arrow: "NO_ARROW",  offset: new THREE.Vector3(0.5, 0.4, -0.5) },
-            { id: 'iso_lb',     label: "9. Згори-зліва позаду",   desc: "Крок вліво і назад.",                    arrow: "NO_ARROW",  offset: new THREE.Vector3(-1.0, 0, 0.5) },
-            { id: 'iso_rb',     label: "10. Згори-справа позаду", desc: "Крок вправо і назад.",                   arrow: "NO_ARROW",  offset: new THREE.Vector3(1.0, 0, 0.5) }
+            { id: 'front',      label: "1. По центру",       desc: "Станьте перед точкою і зробіть фото.",          arrow: "",          offset: new THREE.Vector3(0, 0, 0) },
+            { id: 'left',       label: "2. Лівий ракурс",   desc: "Тепер зліва. Точка по центру кадру.",    arrow: "⬅",         offset: new THREE.Vector3(-0.8, 0, 0) },
+            { id: 'right',      label: "3. Правий ракурс",  desc: "Тепер правий бік за тією ж логікою.",        arrow: "➡",         offset: new THREE.Vector3(0.8, 0, 0) },
+            { id: 'back',       label: "4. Ракурс позаду",  desc: "Візьміть ракурс ззаду.",        arrow: "⬇",         offset: new THREE.Vector3(0, 0, 1.0) },
+            { id: 'bot_front',  label: "5. По центру (знизу)",       desc: "Поверніться на початок, але присядьте.",        arrow: "⬇",         offset: new THREE.Vector3(0, -0.6, 0) },
+            { id: 'bot_left',   label: "6. Зліва (знизу)",  desc: "Залишаючись сидячи, ракурс зліва",        arrow: "⬅",         offset: new THREE.Vector3(-0.8, -0.6, 0) },
+            { id: 'iso_lf',     label: "7. Згори-зліва попереду",   desc: "Ізометрія. Зліва-згори спереду",         arrow: "NO_ARROW",  offset: new THREE.Vector3(-0.5, 0.4, -0.5) },
+            { id: 'iso_rf',     label: "8. Згори-справа попереду",  desc: "Фото справа-згори попереду",                  arrow: "NO_ARROW",  offset: new THREE.Vector3(0.5, 0.4, -0.5) },
+            { id: 'iso_lb',     label: "9. Згори-зліва позаду",   desc: "Аналогічно позаду. Згори-зліва",                    arrow: "NO_ARROW",  offset: new THREE.Vector3(-1.0, 0, 0.5) },
+            { id: 'iso_rb',     label: "10. Згори-справа позаду", desc: "І останнє. Згори-справа позаду",                   arrow: "NO_ARROW",  offset: new THREE.Vector3(1.0, 0, 0.5) }
         ];
 
         const CV_SCAN_SIZE = 32; 
