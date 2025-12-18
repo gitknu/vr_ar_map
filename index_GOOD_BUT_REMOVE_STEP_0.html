@@ -207,10 +207,9 @@
     <div id="ui-layer">
         <div id="panel">
             <div id="progress-container"><div id="progress-fill"></div></div>
-            <!-- Initial state set directly to Step 1 -->
-            <span id="lbl-step">По центру (1/10)</span>
-            <span id="lbl-desc">Станьте перед точкою і зробіть фото.</span>
-            <button id="btn-action">ЗНІМОК</button>
+            <span id="lbl-step">ІНІЦІАЛІЗАЦІЯ</span>
+            <span id="lbl-desc">Калібрування сенсорів.</span>
+            <button id="btn-action">ПОЧАТИ СКАН</button>
             <button id="btn-fix">ЦЕНТРУВАТИ (при відхиленні)</button>
         </div>
     </div>
@@ -346,9 +345,8 @@
         let miniScene, miniCam, miniRenderer, miniTargetMarker;
 
         let capturedPoints = []; 
-        let stepIndex = 1; // Start directly at step 1
+        let stepIndex = 0; 
         let isSetupComplete = false;
-        let permissionGranted = false;
 
         const raycaster = new THREE.Raycaster();
         const centerScreen = new THREE.Vector2(0, 0);
@@ -377,13 +375,8 @@
             renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 
             scene.add(new THREE.AmbientLight(0xffffff, 2));
-            
-            // Init Controls immediately
-            controls = new OrientationManager(camera);
-            controls.enabled = true;
 
             initMiniMap();
-            updateUI(); // Ensure UI reflects step 1
             animate();
         }
 
@@ -433,29 +426,26 @@
         // 4. INTERACTION FLOW
         // --------------------------------------------------------------------------
         btnAction.addEventListener('click', () => {
-            // Implicit Permission Request for iOS on first click
-            if (typeof DeviceOrientationEvent !== 'undefined' && 
-                typeof DeviceOrientationEvent.requestPermission === 'function' &&
-                !permissionGranted) {
-                
-                DeviceOrientationEvent.requestPermission()
-                    .then(response => {
-                        if (response === 'granted') {
-                            permissionGranted = true;
-                            captureStep(); // Take the shot immediately after permission
-                        }
-                    })
-                    .catch(console.error);
-                return; // Wait for promise
-            }
-
-            // Normal flow
-            if (stepIndex <= CAPTURE_STEPS.length) {
+            if (stepIndex === 0) {
+                if (typeof DeviceOrientationEvent?.requestPermission === 'function') {
+                    DeviceOrientationEvent.requestPermission().then(res => { if (res === 'granted') startCalibration(); });
+                } else {
+                    startCalibration();
+                }
+            } else if (stepIndex <= CAPTURE_STEPS.length) {
                 captureStep();
             }
         });
 
         btnFix.addEventListener('click', manualFixLogic);
+
+        function startCalibration() {
+            controls = new OrientationManager(camera);
+            controls.enabled = true;
+            stepIndex = 1;
+            btnAction.innerText = "ЗНІМОК";
+            updateUI();
+        }
 
         function updateUI() {
             if(stepIndex > CAPTURE_STEPS.length) return;
