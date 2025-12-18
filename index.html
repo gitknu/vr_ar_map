@@ -1,0 +1,618 @@
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Precision AR: Мульти-ракурс</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #000; font-family: 'Courier New', Courier, monospace; }
+        
+        /* 1. CAMERA & CANVAS */
+        #camera-feed {
+            position: absolute; top: 50%; left: 50%;
+            transform: translate(-50%, -50%);
+            min-width: 100%; min-height: 100%;
+            width: auto; height: auto;
+            z-index: 0; object-fit: cover;
+            filter: contrast(1.1) brightness(1.1);
+        }
+        #ar-overlay {
+            position: absolute; top: 0; left: 0;
+            width: 100%; height: 100%; z-index: 2;
+            background: transparent;
+        }
+
+        /* 2. HUD ELEMENTS */
+        #crosshair {
+            position: absolute; top: 50%; left: 50%;
+            width: 40px; height: 40px;
+            transform: translate(-50%, -50%);
+            z-index: 5; pointer-events: none;
+        }
+        #crosshair::before, #crosshair::after {
+            content: ''; position: absolute; background: #00ff00; box-shadow: 0 0 4px #000;
+        }
+        #crosshair::before { top: 19px; left: 0; width: 40px; height: 2px; }
+        #crosshair::after { top: 0; left: 19px; width: 2px; height: 40px; }
+        
+        /* Lock Indicator */
+        #lock-indicator {
+            position: absolute; top: 50%; left: 50%;
+            width: 80px; height: 80px;
+            transform: translate(-50%, -50%);
+            border: 2px dashed cyan;
+            border-radius: 50%;
+            z-index: 4; opacity: 0;
+            transition: all 0.2s;
+            box-shadow: 0 0 15px cyan;
+            pointer-events: none;
+        }
+        #lock-indicator.locked { 
+            opacity: 1; 
+            border-style: solid;
+            transform: translate(-50%, -50%) scale(1.0); 
+            border-color: #00ff00;
+            box-shadow: 0 0 15px #00ff00;
+        }
+
+        /* Guide Arrow (Animation) */
+        #guide-arrow {
+            position: absolute; top: 35%; left: 50%;
+            transform: translate(-50%, -50%);
+            font-size: 60px; color: rgba(255, 255, 0, 0.8);
+            z-index: 4; display: none;
+            text-shadow: 0 0 10px black;
+            animation: bounce 1s infinite;
+        }
+        @keyframes bounce { 0%, 100% { transform: translate(-50%, -50%) scale(1); } 50% { transform: translate(-50%, -60%) scale(1.1); } }
+
+        /* Snapshot Strip (Scrollable) */
+        #snapshot-strip {
+            position: absolute; top: 10px; left: 0; width: 100%; height: 70px;
+            z-index: 20; display: flex; align-items: center; 
+            overflow-x: auto; padding-left: 50%; 
+            scroll-behavior: smooth;
+            pointer-events: none;
+        }
+        #snapshot-strip::-webkit-scrollbar { display: none; }
+        
+        .snap-thumb {
+            height: 50px; width: 50px; min-width: 50px; object-fit: cover;
+            border: 1px solid #444; border-radius: 6px; background: #000; 
+            opacity: 0.5; margin: 0 4px; transition: all 0.3s;
+        }
+        .snap-thumb.active-lock { 
+            border-color: #00ff00; opacity: 1; 
+            transform: scale(1.2); box-shadow: 0 0 10px #00ff00; 
+            z-index: 22;
+        }
+
+        /* 3. SIZE SLIDER (Restored) */
+        #slider-container {
+            position: absolute; top: 120px; right: 10px;
+            width: 30px; height: 180px; z-index: 20;
+            display: flex; align-items: center; justify-content: center;
+        }
+        input[type=range][orient=vertical] {
+            writing-mode: bt-lr; -webkit-appearance: slider-vertical;
+            width: 8px; height: 100%; padding: 0 5px;
+        }
+        #size-slider {
+            transform: rotate(-90deg); width: 160px; margin: 0;
+            background: rgba(255,255,255,0.2); border-radius: 5px; cursor: pointer;
+        }
+        #slider-label {
+            position: absolute; top: 100px; right: 15px;
+            color: #00ffff; font-size: 12px; font-weight: bold;
+            z-index: 20; pointer-events: none; text-shadow: 1px 1px 2px black;
+        }
+
+        /* 4. UI CONTROLS */
+        #ui-layer {
+            position: absolute; bottom: 30px; left: 0; width: 100%;
+            z-index: 10; display: flex; flex-direction: column; align-items: center;
+            pointer-events: none;
+        }
+        #panel {
+            background: rgba(10, 10, 10, 0.9); backdrop-filter: blur(10px);
+            padding: 20px; border-radius: 20px; text-align: center;
+            border: 1px solid rgba(255,255,255,0.15); width: 85%; max-width: 400px;
+            pointer-events: auto; transition: all 0.3s;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+        }
+        
+        /* Progress Bar */
+        #progress-container {
+            width: 100%; height: 4px; background: #333; margin-bottom: 15px;
+            border-radius: 2px; overflow: hidden;
+        }
+        #progress-fill {
+            height: 100%; width: 0%; background: #00ff00; 
+            transition: width 0.3s;
+        }
+
+        #lbl-step { color: #00ff00; font-size: 14px; font-weight: bold; text-transform: uppercase; margin-bottom: 5px; display: block; letter-spacing: 1px; }
+        #lbl-desc { color: #ddd; font-size: 15px; margin-bottom: 20px; display: block; line-height: 1.4; }
+        
+        button {
+            background: #fff; color: #000; border: none; padding: 14px 0;
+            font-size: 16px; font-weight: 800; border-radius: 8px; cursor: pointer;
+            text-transform: uppercase; width: 100%;
+            box-shadow: 0 4px 0 #ccc; transition: transform 0.1s, box-shadow 0.1s;
+        }
+        button:active { transform: translateY(4px); box-shadow: 0 0 0 #ccc; }
+        
+        #btn-action { background: #00ff00; box-shadow: 0 4px 0 #00aa00; }
+        #btn-action:active { box-shadow: 0 0 0 #00aa00; }
+        
+        #btn-fix { background: #FF9500; color: white; display: none; margin-top: 10px; font-size: 14px; box-shadow: 0 4px 0 #cc7a00; }
+        #btn-fix:active { box-shadow: 0 0 0 #cc7a00; }
+
+        #debug {
+            position: absolute; top: 80px; left: 10px;
+            color: lime; font-size: 10px; z-index: 20;
+            background: rgba(0,0,0,0.6); padding: 5px; pointer-events: none;
+            white-space: pre-wrap; border-radius: 4px;
+        }
+    </style>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+</head>
+<body>
+
+    <video id="camera-feed" playsinline autoplay muted></video>
+    <canvas id="ar-overlay"></canvas>
+    
+    <div id="crosshair"></div>
+    <div id="lock-indicator"></div>
+    <div id="guide-arrow">⬆</div>
+    <div id="debug">Система готова.</div>
+    
+    <div id="snapshot-strip"></div>
+
+    <!-- Restored Slider -->
+    <div id="slider-label">РОЗМІР</div>
+    <div id="slider-container">
+        <!-- Changed default to 0.5 so it's visible, range 0.05 to 2.0 -->
+        <input type="range" id="size-slider" min="0.05" max="0.95" step="0.005" value="0.1">
+    </div>
+
+    <div id="ui-layer">
+        <div id="panel">
+            <div id="progress-container"><div id="progress-fill"></div></div>
+            <span id="lbl-step">ІНІЦІАЛІЗАЦІЯ</span>
+            <span id="lbl-desc">Калібрування сенсорів.</span>
+            <button id="btn-action">ПОЧАТИ СКАН</button>
+            <button id="btn-fix">ЦЕНТРУВАТИ</button>
+        </div>
+    </div>
+
+    <script>
+        // --------------------------------------------------------------------------
+        // CONFIGURATION: THE 10 STEPS
+        // --------------------------------------------------------------------------
+        const CAPTURE_STEPS = [
+            { id: 'front',      label: "1. Центр",       desc: "Станьте прямо перед об'єктом.",          arrow: "",          offset: new THREE.Vector3(0, 0, 0) },
+            { id: 'left',       label: "2. Рух вліво",   desc: "Крок ВЛІВО (~1м). Об'єкт по центру.",    arrow: "⬅",         offset: new THREE.Vector3(-0.8, 0, 0) },
+            { id: 'right',      label: "3. Рух вправо",  desc: "Крок ВПРАВО (через центр, ~1м).",        arrow: "➡",         offset: new THREE.Vector3(0.8, 0, 0) },
+            { id: 'back',       label: "4. Крок назад",  desc: "Зробіть крок НАЗАД від об'єкта.",        arrow: "⬇",         offset: new THREE.Vector3(0, 0, 1.0) },
+            { id: 'bot_front',  label: "5. Знизу",       desc: "Поверніться в центр. ПРИСЯДЬТЕ.",        arrow: "⬇",         offset: new THREE.Vector3(0, -0.6, 0) },
+            { id: 'bot_left',   label: "6. Знизу-ліво",  desc: "Крок ВЛІВО, залишаючись сидячи.",        arrow: "⬅",         offset: new THREE.Vector3(-0.8, -0.6, 0) },
+            { id: 'iso_lf',     label: "7. Верх-ліво",   desc: "ВСТАНЬТЕ. Крок вліво і вперед.",         arrow: "NO_ARROW",  offset: new THREE.Vector3(-0.5, 0.4, -0.5) },
+            { id: 'iso_rf',     label: "8. Верх-право",  desc: "Крок вправо і вперед.",                  arrow: "NO_ARROW",  offset: new THREE.Vector3(0.5, 0.4, -0.5) },
+            { id: 'iso_lb',     label: "9. Даль-ліво",   desc: "Крок вліво і назад.",                    arrow: "NO_ARROW",  offset: new THREE.Vector3(-1.0, 0, 0.5) },
+            { id: 'iso_rb',     label: "10. Даль-право", desc: "Крок вправо і назад.",                   arrow: "NO_ARROW",  offset: new THREE.Vector3(1.0, 0, 0.5) }
+        ];
+
+        const CV_SCAN_SIZE = 32; 
+        const VISUAL_THRESHOLD = 30; 
+
+        // --------------------------------------------------------------------------
+        // 1. SENSOR FUSION
+        // --------------------------------------------------------------------------
+        class OrientationManager {
+            constructor(camera) {
+                this.camera = camera;
+                this.camera.rotation.reorder('YXZ');
+                this.enabled = false;
+                this.deviceOrientation = {};
+                this.screenOrientation = 0;
+                
+                this.targetQ = new THREE.Quaternion();
+                this.euler = new THREE.Euler();
+                this.q0 = new THREE.Quaternion();
+                this.q1 = new THREE.Quaternion(-Math.sqrt(0.5), 0, 0, Math.sqrt(0.5)); 
+                this.zee = new THREE.Vector3(0, 0, 1);
+                this.visualCorrectionQ = new THREE.Quaternion();
+
+                window.addEventListener('deviceorientation', e => this.deviceOrientation = e);
+                window.addEventListener('orientationchange', () => this.screenOrientation = window.orientation || 0);
+                this.screenOrientation = window.orientation || 0;
+            }
+
+            update() {
+                if (!this.enabled || !this.deviceOrientation.alpha) return;
+
+                const alpha = THREE.Math.degToRad(this.deviceOrientation.alpha || 0);
+                const beta = THREE.Math.degToRad(this.deviceOrientation.beta || 0);
+                const gamma = THREE.Math.degToRad(this.deviceOrientation.gamma || 0);
+                const orient = THREE.Math.degToRad(this.screenOrientation);
+
+                this.euler.set(beta, alpha, -gamma, 'YXZ'); 
+                this.targetQ.setFromEuler(this.euler); 
+                this.targetQ.multiply(this.q1); 
+                this.targetQ.multiply(this.q0.setFromAxisAngle(this.zee, -orient));
+
+                let finalQ = this.targetQ.clone();
+                finalQ.premultiply(this.visualCorrectionQ); 
+                this.camera.quaternion.slerp(finalQ, 0.15); 
+            }
+
+            correctDrift(storedSnapshotQ) {
+                const sensorInv = this.targetQ.clone().invert();
+                const drift = storedSnapshotQ.clone().multiply(sensorInv);
+                this.visualCorrectionQ.slerp(drift, 0.08); 
+            }
+        }
+
+        // --------------------------------------------------------------------------
+        // 2. COMPUTER VISION
+        // --------------------------------------------------------------------------
+        const cvCanvas = document.createElement('canvas');
+        cvCanvas.width = CV_SCAN_SIZE;
+        cvCanvas.height = CV_SCAN_SIZE;
+        const cvCtx = cvCanvas.getContext('2d', { willReadFrequently: true });
+
+        function extractVisualFingerprint(videoSource) {
+            const vw = videoSource.videoWidth;
+            const vh = videoSource.videoHeight;
+            if(vw === 0 || vh === 0) return null;
+
+            const minDim = Math.min(vw, vh);
+            const sx = (vw - minDim) / 2;
+            const sy = (vh - minDim) / 2;
+            
+            cvCtx.drawImage(videoSource, sx, sy, minDim, minDim, 0, 0, CV_SCAN_SIZE, CV_SCAN_SIZE);
+            const frame = cvCtx.getImageData(0, 0, CV_SCAN_SIZE, CV_SCAN_SIZE);
+            const data = frame.data;
+            const grayData = new Uint8Array(CV_SCAN_SIZE * CV_SCAN_SIZE);
+
+            for (let i = 0; i < data.length; i += 4) {
+                grayData[i/4] = 0.299*data[i] + 0.587*data[i+1] + 0.114*data[i+2];
+            }
+            return grayData;
+        }
+
+        function compareFingerprints(fp1, fp2) {
+            if(!fp1 || !fp2) return 255;
+            let diff = 0;
+            for (let i = 0; i < fp1.length; i++) {
+                diff += Math.abs(fp1[i] - fp2[i]);
+            }
+            return diff / fp1.length;
+        }
+
+        // --------------------------------------------------------------------------
+        // 3. MAIN APP
+        // --------------------------------------------------------------------------
+        const video = document.getElementById('camera-feed');
+        const canvas = document.getElementById('ar-overlay');
+        const debug = document.getElementById('debug');
+        const snapStrip = document.getElementById('snapshot-strip');
+        const lockIndicator = document.getElementById('lock-indicator');
+        const guideArrow = document.getElementById('guide-arrow');
+        
+        const uiStep = document.getElementById('lbl-step');
+        const uiDesc = document.getElementById('lbl-desc');
+        const btnAction = document.getElementById('btn-action');
+        const btnFix = document.getElementById('btn-fix');
+        const progressFill = document.getElementById('progress-fill');
+        
+        // Slider Element
+        const slider = document.getElementById('size-slider');
+
+        let scene, camera, renderer, controls;
+        let worldRoot, markerMesh;
+        
+        let capturedPoints = []; 
+        let stepIndex = 0; 
+        let isSetupComplete = false;
+
+        const raycaster = new THREE.Raycaster();
+        const centerScreen = new THREE.Vector2(0, 0);
+
+        async function initCamera() {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({
+                    video: { facingMode: 'environment', width: { ideal: 640 }, height: { ideal: 480 } },
+                    audio: false
+                });
+                video.srcObject = stream;
+                video.play();
+            } catch (e) { debug.innerText = "Помилка камери: " + e.message; }
+        }
+
+        function initThree() {
+            scene = new THREE.Scene();
+            worldRoot = new THREE.Group();
+            scene.add(worldRoot);
+
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 100);
+            
+            renderer = new THREE.WebGLRenderer({ canvas: canvas, alpha: true, antialias: false });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+
+            scene.add(new THREE.AmbientLight(0xffffff, 2));
+            animate();
+        }
+
+        // Slider Interaction (Restored)
+        slider.addEventListener('input', (e) => {
+            const newSize = parseFloat(e.target.value);
+            if (markerMesh) {
+                markerMesh.scale.set(newSize, newSize, 1);
+                debug.innerText = `Розмір: ${(newSize * 100).toFixed(0)}см`;
+            }
+        });
+
+        // --------------------------------------------------------------------------
+        // 4. INTERACTION FLOW
+        // --------------------------------------------------------------------------
+        btnAction.addEventListener('click', () => {
+            if (stepIndex === 0) {
+                if (typeof DeviceOrientationEvent?.requestPermission === 'function') {
+                    DeviceOrientationEvent.requestPermission().then(res => { if (res === 'granted') startCalibration(); });
+                } else {
+                    startCalibration();
+                }
+            } else if (stepIndex <= CAPTURE_STEPS.length) {
+                captureStep();
+            }
+        });
+
+        btnFix.addEventListener('click', manualFixLogic);
+
+        function startCalibration() {
+            controls = new OrientationManager(camera);
+            controls.enabled = true;
+            stepIndex = 1;
+            btnAction.innerText = "ЗНІМОК";
+            updateUI();
+        }
+
+        function updateUI() {
+            if(stepIndex > CAPTURE_STEPS.length) return;
+
+            const cfg = CAPTURE_STEPS[stepIndex - 1];
+            uiStep.innerText = `${cfg.label} (${stepIndex}/${CAPTURE_STEPS.length})`;
+            uiDesc.innerText = cfg.desc;
+            
+            const pct = ((stepIndex - 1) / CAPTURE_STEPS.length) * 100;
+            progressFill.style.width = `${pct}%`;
+
+            if(cfg.arrow && cfg.arrow !== "NO_ARROW") {
+                guideArrow.style.display = 'block';
+                guideArrow.innerText = cfg.arrow;
+                if(cfg.arrow === "⬅") guideArrow.style.transform = "translate(-50%, -50%) rotate(0deg)";
+                if(cfg.arrow === "➡") guideArrow.style.transform = "translate(-50%, -50%) rotate(0deg)";
+                if(cfg.arrow === "⬇") guideArrow.style.transform = "translate(-50%, -50%) rotate(0deg)";
+            } else {
+                guideArrow.style.display = 'none';
+            }
+        }
+
+        function captureStep() {
+            const cfg = CAPTURE_STEPS[stepIndex - 1];
+
+            raycaster.setFromCamera(centerScreen, camera);
+            const rawDir = raycaster.ray.direction.clone();
+            const currentQuat = camera.quaternion.clone();
+
+            const fingerprint = extractVisualFingerprint(video);
+            if(!fingerprint) return; 
+
+            const canvasSnap = document.createElement('canvas');
+            canvasSnap.width = 64; canvasSnap.height = 64;
+            const vRatio = video.videoWidth / video.videoHeight;
+            let sx=0, sy=0, sWidth=video.videoWidth, sHeight=video.videoHeight;
+            if(vRatio > 1) { sx = (video.videoWidth - video.videoHeight)/2; sWidth = video.videoHeight; }
+            else { sy = (video.videoHeight - video.videoWidth)/2; sHeight = video.videoWidth; }
+            
+            canvasSnap.getContext('2d').drawImage(video, sx, sy, sWidth, sHeight, 0, 0, 64, 64);
+            
+            const thumbImg = document.createElement('img');
+            thumbImg.src = canvasSnap.toDataURL();
+            thumbImg.className = 'snap-thumb';
+            thumbImg.id = `thumb-${stepIndex}`;
+            snapStrip.appendChild(thumbImg);
+            snapStrip.scrollLeft = snapStrip.scrollWidth;
+
+            capturedPoints.push({ 
+                origin: cfg.offset.clone(), 
+                direction: rawDir,
+                quaternion: currentQuat, 
+                visualData: fingerprint,
+                uiId: `thumb-${stepIndex}`
+            });
+
+            stepIndex++;
+            if (stepIndex > CAPTURE_STEPS.length) {
+                finalizeSetup();
+            } else {
+                updateUI();
+            }
+        }
+
+        function finalizeSetup() {
+            guideArrow.style.display = 'none';
+            progressFill.style.width = '100%';
+            
+            calculateIntersection();
+
+            isSetupComplete = true;
+            uiStep.innerText = "СТЕЖЕННЯ АКТИВНЕ";
+            uiDesc.innerText = "Зафіксовано. Рухайтесь вільно.";
+            btnAction.style.display = 'none';
+            btnFix.style.display = 'block';
+        }
+
+        // --------------------------------------------------------------------------
+        // 5. MATH (Triangulation)
+        // --------------------------------------------------------------------------
+        function calculateIntersection() {
+            let accumulatedPoint = new THREE.Vector3(0,0,0);
+            let count = 0;
+
+            for (let i = 0; i < capturedPoints.length; i++) {
+                for (let j = i + 1; j < capturedPoints.length; j++) {
+                    const result = closestPointBetweenRays(capturedPoints[i], capturedPoints[j]);
+                    if (result) {
+                        accumulatedPoint.add(result);
+                        count++;
+                    }
+                }
+            }
+
+            if (count > 0) accumulatedPoint.divideScalar(count);
+            else accumulatedPoint.set(0, -1.0, -2); 
+
+            placeObject(accumulatedPoint);
+        }
+
+        function closestPointBetweenRays(r1, r2) {
+            const p1 = r1.origin; const d1 = r1.direction;
+            const p2 = r2.origin; const d2 = r2.direction;
+            const n = new THREE.Vector3().crossVectors(d1, d2);
+            const n2 = n.lengthSq();
+            if (n2 < 0.001) return null;
+            const d12 = new THREE.Vector3().subVectors(p2, p1);
+            const t = d12.dot(new THREE.Vector3().crossVectors(d2, n)) / n2;
+            const u = d12.dot(new THREE.Vector3().crossVectors(d1, n)) / n2;
+            const pos1 = p1.clone().add(d1.clone().multiplyScalar(t));
+            const pos2 = p2.clone().add(d2.clone().multiplyScalar(u));
+            return new THREE.Vector3().addVectors(pos1, pos2).multiplyScalar(0.5);
+        }
+
+        function placeObject(pos) {
+            const geo = new THREE.PlaneGeometry(1, 1); 
+            const mat = new THREE.MeshBasicMaterial({ color: 0x00ffff, side: THREE.DoubleSide, transparent: true, opacity: 0.7, wireframe: false });
+            
+            markerMesh = new THREE.Mesh(geo, mat);
+            markerMesh.rotation.x = -Math.PI / 2;
+            
+            // Apply Slider Size (Default 0.5)
+            const initialSize = parseFloat(slider.value);
+            markerMesh.scale.set(initialSize, initialSize, 1);
+            
+            markerMesh.position.copy(pos);
+            
+            const boxGeo = new THREE.BoxGeometry(1,1,1);
+            const boxMat = new THREE.MeshBasicMaterial({ color: 0xffffff, wireframe: true, transparent:true, opacity: 0.3});
+            const box = new THREE.Mesh(boxGeo, boxMat);
+            box.position.z = 0.5; 
+            markerMesh.add(box);
+
+            worldRoot.add(markerMesh);
+        }
+
+        function manualFixLogic() {
+            if(!markerMesh) return;
+            raycaster.setFromCamera(centerScreen, camera);
+            const groundY = markerMesh.position.y;
+            const origin = raycaster.ray.origin;
+            const dir = raycaster.ray.direction;
+            
+            if (Math.abs(dir.y) < 0.01) return; 
+            const t = (groundY - origin.y) / dir.y;
+            if (t < 0) return; 
+
+            const hitPoint = new THREE.Vector3().copy(origin).add(dir.multiplyScalar(t));
+            markerMesh.position.x = hitPoint.x;
+            markerMesh.position.z = hitPoint.z;
+            
+            markerMesh.material.color.setHex(0xFFFFFF);
+            setTimeout(() => markerMesh.material.color.setHex(0x00FFFF), 200);
+        }
+
+        // --------------------------------------------------------------------------
+        // 6. ENGINE LOOP
+        // --------------------------------------------------------------------------
+        let frameCount = 0;
+
+        function runVisualLocalization() {
+            if (!isSetupComplete || capturedPoints.length === 0) return;
+
+            if (frameCount % 5 !== 0) return;
+
+            const currentQ = camera.quaternion;
+            const currentFingerprint = extractVisualFingerprint(video);
+
+            let bestMatchDiff = 999;
+            let bestMatchIdx = -1;
+
+            for (let i = 0; i < capturedPoints.length; i++) {
+                const angleDiff = currentQ.angleTo(capturedPoints[i].quaternion);
+                
+                if (angleDiff < 0.45) { 
+                    const diff = compareFingerprints(currentFingerprint, capturedPoints[i].visualData);
+                    if (diff < bestMatchDiff) {
+                        bestMatchDiff = diff;
+                        bestMatchIdx = i;
+                    }
+                }
+            }
+
+            document.querySelectorAll('.snap-thumb').forEach(el => el.classList.remove('active-lock'));
+            lockIndicator.classList.remove('locked');
+
+            if (bestMatchIdx !== -1 && bestMatchDiff < VISUAL_THRESHOLD) {
+                lockIndicator.classList.add('locked');
+                const match = capturedPoints[bestMatchIdx];
+                const thumb = document.getElementById(match.uiId);
+                if(thumb) thumb.classList.add('active-lock');
+                
+                controls.correctDrift(match.quaternion);
+
+                if (markerMesh) {
+                    raycaster.setFromCamera(centerScreen, camera);
+                    const groundY = markerMesh.position.y;
+                    const origin = raycaster.ray.origin;
+                    const dir = raycaster.ray.direction;
+                    
+                    if (Math.abs(dir.y) > 0.05) { 
+                        const t = (groundY - origin.y) / dir.y;
+                        if (t > 0) {
+                            const targetPos = new THREE.Vector3().copy(origin).add(dir.multiplyScalar(t));
+                            markerMesh.position.x += (targetPos.x - markerMesh.position.x) * 0.1;
+                            markerMesh.position.z += (targetPos.z - markerMesh.position.z) * 0.1;
+                        }
+                    }
+                }
+                debug.innerText = `ЗАХОПЛЕНО: Кадр ${bestMatchIdx+1} | Різн: ${bestMatchDiff.toFixed(1)}`;
+            } else {
+                debug.innerText = `Пошук... Краще: ${bestMatchDiff > 200 ? '-' : bestMatchDiff.toFixed(1)}`;
+            }
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+            frameCount++;
+            
+            if (controls) controls.update();
+            runVisualLocalization();
+            
+            renderer.render(scene, camera);
+        }
+
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+        initCamera();
+        initThree();
+
+    </script>
+</body>
+</html>
