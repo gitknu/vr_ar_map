@@ -149,11 +149,33 @@
         #btn-fix:active { box-shadow: 0 0 0 #cc7a00; }
 
         #debug {
-            position: absolute; top: 80px; left: 10px;
+            position: absolute; top: 160px; /* Moved down to make room for Visualizer */
+            left: 10px;
             color: lime; font-size: 10px; z-index: 20;
             background: rgba(0,0,0,0.6); padding: 5px; pointer-events: none;
             white-space: pre-wrap; border-radius: 4px;
         }
+
+        /* 5. VISUALIZER (MINI-MAP) */
+        #mini-map-container {
+            position: absolute; top: 15px; left: 15px;
+            width: 120px; height: 120px;
+            z-index: 30; pointer-events: none;
+            background: rgba(0, 20, 0, 0.8);
+            border: 1px solid #00ff00;
+            border-radius: 8px;
+            box-shadow: 0 0 10px rgba(0, 255, 0, 0.3);
+        }
+        #mini-map {
+            width: 100%; height: 100%;
+            border-radius: 8px;
+        }
+        #mini-label {
+            position: absolute; bottom: 2px; right: 4px;
+            color: #00ff00; font-size: 9px; font-weight: bold;
+            opacity: 0.8;
+        }
+
     </style>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 </head>
@@ -162,6 +184,12 @@
     <video id="camera-feed" playsinline autoplay muted></video>
     <canvas id="ar-overlay"></canvas>
     
+    <!-- Mini Map Visualizer -->
+    <div id="mini-map-container">
+        <canvas id="mini-map"></canvas>
+        <div id="mini-label">НАВІГАЦІЯ</div>
+    </div>
+
     <div id="crosshair"></div>
     <div id="lock-indicator"></div>
     <div id="guide-arrow">⬆</div>
@@ -313,6 +341,9 @@
         let scene, camera, renderer, controls;
         let worldRoot, markerMesh;
         
+        // Mini Map Variables
+        let miniScene, miniCam, miniRenderer, miniTargetMarker;
+
         let capturedPoints = []; 
         let stepIndex = 0; 
         let isSetupComplete = false;
@@ -332,6 +363,7 @@
         }
 
         function initThree() {
+            // Main Scene
             scene = new THREE.Scene();
             worldRoot = new THREE.Group();
             scene.add(worldRoot);
@@ -343,7 +375,42 @@
             renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 
             scene.add(new THREE.AmbientLight(0xffffff, 2));
+
+            initMiniMap();
             animate();
+        }
+
+        function initMiniMap() {
+            const miniCanvas = document.getElementById('mini-map');
+            miniRenderer = new THREE.WebGLRenderer({ canvas: miniCanvas, alpha: true, antialias: true });
+            miniRenderer.setSize(120, 120);
+
+            miniScene = new THREE.Scene();
+
+            // Central Object (Green Box)
+            const objGeo = new THREE.BoxGeometry(0.5, 0.5, 0.5);
+            const objMat = new THREE.MeshBasicMaterial({ color: 0x00ff00, wireframe: true });
+            const objMesh = new THREE.Mesh(objGeo, objMat);
+            miniScene.add(objMesh);
+
+            // Ground Grid
+            const grid = new THREE.GridHelper(4, 8, 0x444444, 0x222222);
+            miniScene.add(grid);
+
+            // Target Camera Position (Yellow Cone)
+            const coneGeo = new THREE.ConeGeometry(0.15, 0.4, 8);
+            coneGeo.rotateX(Math.PI / 2); // Point towards object
+            const coneMat = new THREE.MeshBasicMaterial({ color: 0xffff00 });
+            miniTargetMarker = new THREE.Mesh(coneGeo, coneMat);
+            // Initial pos
+            miniTargetMarker.position.set(0, 0, 1.5); 
+            miniTargetMarker.lookAt(0,0,0);
+            miniScene.add(miniTargetMarker);
+
+            // Mini Map Camera (Isometric View)
+            miniCam = new THREE.PerspectiveCamera(50, 1, 0.1, 20);
+            miniCam.position.set(2.5, 2.0, 2.5);
+            miniCam.lookAt(0, 0, 0);
         }
 
         // Slider Interaction (Restored)
@@ -389,6 +456,17 @@
             
             const pct = ((stepIndex - 1) / CAPTURE_STEPS.length) * 100;
             progressFill.style.width = `${pct}%`;
+
+            // Update Mini Map Marker
+            if (miniTargetMarker) {
+                // If offset is (0,0,0), push it back slightly for visibility
+                if (cfg.offset.lengthSq() === 0) {
+                    miniTargetMarker.position.set(0, 0, 0.8);
+                } else {
+                    miniTargetMarker.position.copy(cfg.offset);
+                }
+                miniTargetMarker.lookAt(0,0,0);
+            }
 
             if(cfg.arrow && cfg.arrow !== "NO_ARROW") {
                 guideArrow.style.display = 'block';
@@ -447,6 +525,9 @@
             guideArrow.style.display = 'none';
             progressFill.style.width = '100%';
             
+            // Hide mini marker or reset it
+            miniTargetMarker.visible = false;
+
             calculateIntersection();
 
             isSetupComplete = true;
@@ -602,6 +683,7 @@
             runVisualLocalization();
             
             renderer.render(scene, camera);
+            if(miniRenderer) miniRenderer.render(miniScene, miniCam);
         }
 
         window.addEventListener('resize', () => {
