@@ -87,7 +87,7 @@
             z-index: 22;
         }
 
-        /* 3. SIZE SLIDER (Restored) */
+        /* 3. SIZE SLIDER */
         #slider-container {
             position: absolute; top: 120px; right: 10px;
             width: 30px; height: 180px; z-index: 20;
@@ -218,13 +218,14 @@
         // --------------------------------------------------------------------------
         // CONFIGURATION: THE 10 STEPS
         // --------------------------------------------------------------------------
+        // COORDINATES FIX: Added Z-depth and adjusted Y for low/back angles so they appear correctly in 3D visualizer
         const CAPTURE_STEPS = [
             { id: 'front',      label: "1. Центр",       desc: "Станьте прямо перед об'єктом.",          arrow: "",          offset: new THREE.Vector3(0, 0, 0) },
             { id: 'left',       label: "2. Рух вліво",   desc: "Крок ВЛІВО (~1м). Об'єкт по центру.",    arrow: "⬅",         offset: new THREE.Vector3(-0.8, 0, 0) },
             { id: 'right',      label: "3. Рух вправо",  desc: "Крок ВПРАВО (через центр, ~1м).",        arrow: "➡",         offset: new THREE.Vector3(0.8, 0, 0) },
-            { id: 'back',       label: "4. Крок назад",  desc: "Зробіть крок НАЗАД від об'єкта.",        arrow: "⬇",         offset: new THREE.Vector3(0, 0, 1.0) },
-            { id: 'bot_front',  label: "5. Знизу",       desc: "Поверніться в центр. ПРИСЯДЬТЕ.",        arrow: "⬇",         offset: new THREE.Vector3(0, -0.6, 0) },
-            { id: 'bot_left',   label: "6. Знизу-ліво",  desc: "Крок ВЛІВО, залишаючись сидячи.",        arrow: "⬅",         offset: new THREE.Vector3(-0.8, -0.6, 0) },
+            { id: 'back',       label: "4. Крок назад",  desc: "Зробіть крок НАЗАД від об'єкта.",        arrow: "⬇",         offset: new THREE.Vector3(0, 0, 1.6) },
+            { id: 'bot_front',  label: "5. Знизу",       desc: "Поверніться в центр. ПРИСЯДЬТЕ.",        arrow: "⬇",         offset: new THREE.Vector3(0, -0.3, 0.8) },
+            { id: 'bot_left',   label: "6. Знизу-ліво",  desc: "Крок ВЛІВО, залишаючись сидячи.",        arrow: "⬅",         offset: new THREE.Vector3(-0.8, -0.3, 0.8) },
             { id: 'iso_lf',     label: "7. Верх-ліво",   desc: "ВСТАНЬТЕ. Крок вліво і вперед.",         arrow: "NO_ARROW",  offset: new THREE.Vector3(-0.5, 0.4, -0.5) },
             { id: 'iso_rf',     label: "8. Верх-право",  desc: "Крок вправо і вперед.",                  arrow: "NO_ARROW",  offset: new THREE.Vector3(0.5, 0.4, -0.5) },
             { id: 'iso_lb',     label: "9. Даль-ліво",   desc: "Крок вліво і назад.",                    arrow: "NO_ARROW",  offset: new THREE.Vector3(-1.0, 0, 0.5) },
