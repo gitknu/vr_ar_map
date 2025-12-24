@@ -179,7 +179,7 @@
         }
         @keyframes blink { 0% { opacity: 1; } 50% { opacity: 0.5; } 100% { opacity: 1; } }
 
-        /* LOCK INDICATOR - Dynamic Colors */
+        /* LOCK INDICATOR */
         #lock-indicator {
             position: absolute; top: 50%; left: 50%;
             width: 80px; height: 80px;
@@ -195,12 +195,11 @@
             opacity: 1; 
             border-style: solid;
             transform: translate(-50%, -50%) scale(1.0); 
-            border-color: #00ff00; /* Default GREEN */
+            border-color: #00ff00; 
             box-shadow: 0 0 15px #00ff00;
         }
-        /* New Silhouette Style */
         #lock-indicator.locked-silhouette {
-            border-color: #FF9500 !important; /* ORANGE */
+            border-color: #FF9500 !important; 
             box-shadow: 0 0 15px #FF9500 !important;
         }
 
@@ -234,7 +233,6 @@
             transform: scale(1.2); box-shadow: 0 0 10px #00ff00; 
             z-index: 22;
         }
-        /* Orange border for silhouette match on thumb */
         .snap-thumb.active-lock-sil {
             border-color: #FF9500; opacity: 1;
             transform: scale(1.2); box-shadow: 0 0 10px #FF9500;
@@ -1157,8 +1155,26 @@
 
             arControls.correctDrift(match.quaternion, strength);
             
-            // REMOVED AUTOMATIC POSITION UPDATE HERE TO FIX RESIZING BUG
-            
+            if (markerMesh) {
+                // SAFETY: Calculate distance to current object
+                const currentDist = new THREE.Vector3().subVectors(markerMesh.position, camera.position).length();
+                
+                raycaster.setFromCamera(centerScreen, camera);
+                const groundY = markerMesh.position.y;
+                const dir = raycaster.ray.direction, origin = raycaster.ray.origin;
+                
+                if (Math.abs(dir.y) > 0.05) { 
+                    const t = (groundY - origin.y) / dir.y;
+                    
+                    // SAFETY: Only update position if new distance is not wildly different from current distance
+                    // This prevents the "shrinking square" bug when looking up at a shallow angle.
+                    if (t > 0 && t < currentDist * 1.5 && t > currentDist * 0.5) {
+                        const targetPos = new THREE.Vector3().copy(origin).add(dir.multiplyScalar(t));
+                        markerMesh.position.x += (targetPos.x - markerMesh.position.x) * 0.1;
+                        markerMesh.position.z += (targetPos.z - markerMesh.position.z) * 0.1;
+                    }
+                }
+            }
             debug.innerText = `LOCKED [${matchType}]: #${bestMatchIdx+1} (Diff: ${bestMatchDiff.toFixed(1)})`;
         } else {
             debug.innerText = `Scanning...`;
