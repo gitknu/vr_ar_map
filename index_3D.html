@@ -1,11 +1,9 @@
-<!-- --- START OF FILE index_24_DEC_SPEED (1).html --- -->
-
 <!DOCTYPE html>
 <html lang="uk">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Precision AR: Мульти-ракурс</title>
+    <title>Precision AR: Мульти-ракурс 3D</title>
     <style>
         body { margin: 0; overflow: hidden; background-color: #000; font-family: 'Courier New', Courier, monospace; }
         
@@ -160,33 +158,26 @@
         #btn-action { background: #00ff00; box-shadow: 0 4px 0 #00aa00; }
         #btn-action:active { box-shadow: 0 0 0 #00aa00; }
         
-        /* Layout for the final buttons */
+        /* Layout for the final two buttons */
         #final-controls {
             display: none; /* Hidden by default, shown at end */
             width: 100%;
             flex-direction: row;
             justify-content: space-between;
-            gap: 5px;
+            gap: 10px;
             margin-top: 10px;
         }
 
         #btn-fix { 
             background: #FF9500; color: white; 
-            font-size: 11px; box-shadow: 0 4px 0 #cc7a00; 
+            font-size: 13px; box-shadow: 0 4px 0 #cc7a00; 
             flex: 1;
         }
         #btn-fix:active { box-shadow: 0 0 0 #cc7a00; }
 
-        #btn-model { 
-            background: #007AFF; color: white; 
-            font-size: 11px; box-shadow: 0 4px 0 #0056b3; 
-            flex: 1;
-        }
-        #btn-model:active { box-shadow: 0 0 0 #0056b3; }
-
         #btn-reset { 
             background: #ff3333; color: white; 
-            font-size: 11px; box-shadow: 0 4px 0 #cc0000; 
+            font-size: 13px; box-shadow: 0 4px 0 #cc0000; 
             flex: 1;
         }
         #btn-reset:active { box-shadow: 0 0 0 #cc0000; }
@@ -220,10 +211,9 @@
         }
 
     </style>
-    <!-- Basic Three.js -->
+    <!-- Three.js + GLTFLoader -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
-    <!-- Added GLTFLoader for 3D Models -->
-    <script src="https://unpkg.com/three@0.128.0/examples/js/loaders/GLTFLoader.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/GLTFLoader.js"></script>
 </head>
 <body>
 
@@ -248,7 +238,7 @@
     <!-- Restored Slider -->
     <div id="slider-label">РОЗМІР</div>
     <div id="slider-container">
-        <input type="range" id="size-slider" min="0.05" max="0.95" step="0.005" value="0.1">
+        <input type="range" id="size-slider" min="0.01" max="1.0" step="0.005" value="0.1">
     </div>
 
     <div id="ui-layer">
@@ -259,11 +249,10 @@
             
             <button id="btn-action">ПОЧАТИ СКАН</button>
             
-            <!-- Three Buttons for Final State -->
+            <!-- Dual Buttons for Final State -->
             <div id="final-controls">
                 <button id="btn-fix">ЦЕНТРУВАТИ</button>
-                <button id="btn-model">3D МОДЕЛЬ</button>
-                <button id="btn-reset">RESET</button>
+                <button id="btn-reset">ПЕРЕКАЛІБРУВАТИ</button>
             </div>
         </div>
     </div>
@@ -287,7 +276,8 @@
 
         const CV_SCAN_SIZE = 32; 
         const VISUAL_THRESHOLD = 30; 
-        const ROTATION_SPEED_THRESHOLD = 0.08; // Threshold for "Too Fast" warning
+        const ROTATION_SPEED_THRESHOLD = 0.08; 
+        const GLB_MODEL_URL = 'https://nd4s.github.io/ai/files/3d_comp.glb';
 
         // --------------------------------------------------------------------------
         // 1. SENSOR FUSION
@@ -331,7 +321,6 @@
                 let finalQ = this.targetQ.clone();
                 finalQ.premultiply(this.visualCorrectionQ); 
                 
-                // Speed Calculation
                 this.rotationSpeed = this.camera.quaternion.angleTo(finalQ);
                 this.lastQ.copy(this.camera.quaternion);
 
@@ -397,21 +386,17 @@
         const uiDesc = document.getElementById('lbl-desc');
         const btnAction = document.getElementById('btn-action');
         
-        // Final Controls
         const finalControls = document.getElementById('final-controls');
         const btnFix = document.getElementById('btn-fix');
         const btnReset = document.getElementById('btn-reset');
-        const btnModel = document.getElementById('btn-model'); // New Button
         
         const progressFill = document.getElementById('progress-fill');
-        
-        // Slider Element
         const slider = document.getElementById('size-slider');
 
         let scene, camera, renderer, controls;
         let worldRoot, markerMesh;
+        let glbLoader = new THREE.GLTFLoader();
         
-        // Mini Map Variables
         let miniScene, miniCam, miniRenderer, miniTargetMarker;
 
         let capturedPoints = []; 
@@ -433,21 +418,20 @@
         }
 
         function initThree() {
-            // Main Scene
             scene = new THREE.Scene();
             worldRoot = new THREE.Group();
             scene.add(worldRoot);
 
             camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 100);
             
-            renderer = new THREE.WebGLRenderer({ canvas: canvas, alpha: true, antialias: false });
+            renderer = new THREE.WebGLRenderer({ canvas: canvas, alpha: true, antialias: true });
             renderer.setSize(window.innerWidth, window.innerHeight);
             renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 
-            scene.add(new THREE.AmbientLight(0xffffff, 2));
-            const dirLight = new THREE.DirectionalLight(0xffffff, 1);
-            dirLight.position.set(0, 5, 2);
-            scene.add(dirLight);
+            scene.add(new THREE.AmbientLight(0xffffff, 2.5));
+            const sun = new THREE.DirectionalLight(0xffffff, 1.0);
+            sun.position.set(5, 10, 7);
+            scene.add(sun);
 
             initMiniMap();
             animate();
@@ -460,38 +444,33 @@
 
             miniScene = new THREE.Scene();
 
-            // Central Object (Green Box)
             const objGeo = new THREE.BoxGeometry(0.5, 0.5, 0.5);
             const objMat = new THREE.MeshBasicMaterial({ color: 0x00ff00, wireframe: true });
             const objMesh = new THREE.Mesh(objGeo, objMat);
             miniScene.add(objMesh);
 
-            // Ground Grid
             const grid = new THREE.GridHelper(4, 8, 0x444444, 0x222222);
             miniScene.add(grid);
 
-            // Target Camera Position (Yellow Cone)
             const coneGeo = new THREE.ConeGeometry(0.15, 0.4, 8);
-            coneGeo.rotateX(Math.PI / 2); // Point towards object
+            coneGeo.rotateX(Math.PI / 2); 
             const coneMat = new THREE.MeshBasicMaterial({ color: 0xffff00 });
             miniTargetMarker = new THREE.Mesh(coneGeo, coneMat);
-            // Initial pos
             miniTargetMarker.position.set(0, 0, 1.5); 
             miniTargetMarker.lookAt(0,0,0);
             miniScene.add(miniTargetMarker);
 
-            // Mini Map Camera (Isometric View)
             miniCam = new THREE.PerspectiveCamera(50, 1, 0.1, 20);
             miniCam.position.set(2.5, 2.0, 2.5);
             miniCam.lookAt(0, 0, 0);
         }
 
-        // Slider Interaction
         slider.addEventListener('input', (e) => {
             const newSize = parseFloat(e.target.value);
             if (markerMesh) {
-                markerMesh.scale.set(newSize, newSize, 1);
-                debug.innerText = `Розмір: ${(newSize * 100).toFixed(0)}см`;
+                // Scale 3D model uniformly
+                markerMesh.scale.set(newSize, newSize, newSize);
+                debug.innerText = `Розмір: ${(newSize * 100).toFixed(0)}%`;
             }
         });
 
@@ -512,7 +491,6 @@
 
         btnFix.addEventListener('click', manualFixLogic);
         btnReset.addEventListener('click', resetCalibration);
-        btnModel.addEventListener('click', load3DModel); // 3D Button Listener
 
         function startCalibration() {
             controls = new OrientationManager(camera);
@@ -571,7 +549,6 @@
             if(cfg.arrow && cfg.arrow !== "NO_ARROW") {
                 guideArrow.style.display = 'block';
                 guideArrow.innerText = cfg.arrow;
-                guideArrow.style.transform = "translate(-50%, -50%) rotate(0deg)";
             } else {
                 guideArrow.style.display = 'none';
             }
@@ -625,13 +602,13 @@
             calculateIntersection();
             isSetupComplete = true;
             uiStep.innerText = "СТЕЖЕННЯ АКТИВНЕ";
-            uiDesc.innerText = "Зафіксовано. Рухайтесь вільно.";
+            uiDesc.innerText = "3D модель розміщена. Рухайтесь вільно.";
             btnAction.style.display = 'none';
             finalControls.style.display = 'flex';
         }
 
         // --------------------------------------------------------------------------
-        // 5. MATH (Triangulation) & 3D Model
+        // 5. MATH & 3D LOADING
         // --------------------------------------------------------------------------
         function calculateIntersection() {
             let accumulatedPoint = new THREE.Vector3(0,0,0);
@@ -665,54 +642,25 @@
         }
 
         function placeObject(pos) {
-            const geo = new THREE.PlaneGeometry(1, 1); 
-            const mat = new THREE.MeshBasicMaterial({ color: 0x00ffff, side: THREE.DoubleSide, transparent: true, opacity: 0.7 });
-            markerMesh = new THREE.Mesh(geo, mat);
-            // This rotation puts the plane flat on the "ground"
-            markerMesh.rotation.x = -Math.PI / 2;
-            const initialSize = parseFloat(slider.value);
-            markerMesh.scale.set(initialSize, initialSize, 1);
-            markerMesh.position.copy(pos);
-            
-            const boxGeo = new THREE.BoxGeometry(1,1,1);
-            const boxMat = new THREE.MeshBasicMaterial({ color: 0xffffff, wireframe: true, transparent:true, opacity: 0.3});
-            const box = new THREE.Mesh(boxGeo, boxMat);
-            box.position.z = 0.5; 
-            markerMesh.add(box);
-            worldRoot.add(markerMesh);
-        }
+            // Create a parent container for the model
+            const container = new THREE.Group();
+            container.position.copy(pos);
+            worldRoot.add(container);
+            markerMesh = container;
 
-        // Logic to swap Square for GLB
-        function load3DModel() {
-            if(!markerMesh) return;
+            // Load GLB Model
             debug.innerText = "Завантаження 3D моделі...";
-            
-            const loader = new THREE.GLTFLoader();
-            loader.load('https://nd4s.github.io/ai/files/3d_comp.glb', (gltf) => {
-                
-                // 1. Hide the cyan plane material
-                markerMesh.material.visible = false;
-
-                // 2. Remove existing children (wireframe box)
-                while(markerMesh.children.length > 0){
-                    markerMesh.remove(markerMesh.children[0]);
-                }
-
+            glbLoader.load(GLB_MODEL_URL, (gltf) => {
                 const model = gltf.scene;
                 
-                // 3. Compensate rotation. 
-                // markerMesh is rotated -90 deg on X to lay flat. 
-                // GLB models are usually Y-up. To stand up relative to the flat parent, rotate X +90.
-                model.rotation.x = Math.PI / 2; 
+                // Initial scale from slider
+                const initialScale = parseFloat(slider.value);
+                container.scale.set(initialScale, initialScale, initialScale);
                 
-                // Optional: Scale normalization if model is too big/small
-                model.scale.set(1, 1, 1);
-
-                markerMesh.add(model);
-                debug.innerText = "3D модель встановлено!";
-                
+                container.add(model);
+                debug.innerText = "Модель завантажена успішно.";
             }, undefined, (error) => {
-                debug.innerText = "Помилка: " + error;
+                debug.innerText = "Помилка завантаження моделі: " + error.message;
             });
         }
 
@@ -728,23 +676,6 @@
             const hitPoint = new THREE.Vector3().copy(origin).add(dir.multiplyScalar(t));
             markerMesh.position.x = hitPoint.x;
             markerMesh.position.z = hitPoint.z;
-            
-            // Visual feedback flash (if material is visible)
-            if(markerMesh.material.visible) {
-                markerMesh.material.color.setHex(0xFFFFFF);
-                setTimeout(() => markerMesh.material.color.setHex(0x00FFFF), 200);
-            } else {
-                // If 3D model is active, maybe flash the children
-                markerMesh.traverse((child) => {
-                    if (child.isMesh) {
-                        const oldColor = child.material.color ? child.material.color.getHex() : 0xffffff;
-                        if(child.material.emissive) {
-                            child.material.emissive.setHex(0x555555);
-                            setTimeout(() => child.material.emissive.setHex(0x000000), 200);
-                        }
-                    }
-                });
-            }
         }
 
         // --------------------------------------------------------------------------
@@ -756,7 +687,6 @@
         function runVisualLocalization() {
             if (!controls) return;
 
-            // MOTION CHECK: Check if user is moving too fast
             const currentFingerprint = extractVisualFingerprint(video);
             let visualDelta = 0;
             if (lastVisualFingerprint && currentFingerprint) {
@@ -764,7 +694,6 @@
             }
             lastVisualFingerprint = currentFingerprint;
 
-            // Thresholds for warning: Visual Jump > 50 OR Rotation Speed > threshold
             if (controls.rotationSpeed > ROTATION_SPEED_THRESHOLD || visualDelta > 50) {
                 speedWarning.style.display = 'block';
             } else {
@@ -814,9 +743,6 @@
                         }
                     }
                 }
-                debug.innerText = `ЗАХОПЛЕНО: Кадр ${bestMatchIdx+1} | Різн: ${bestMatchDiff.toFixed(1)}`;
-            } else {
-                debug.innerText = `Пошук... Краще: ${bestMatchDiff > 200 ? '-' : bestMatchDiff.toFixed(1)}`;
             }
         }
 
