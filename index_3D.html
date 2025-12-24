@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Precision AR: Мульти-ракурс 3D</title>
+    <title>Precision AR: 3D Model Viewer</title>
     <style>
         body { margin: 0; overflow: hidden; background-color: #000; font-family: 'Courier New', Courier, monospace; }
         
@@ -68,7 +68,7 @@
             box-shadow: 0 0 15px #00ff00;
         }
 
-        /* Guide Arrow (Animation) */
+        /* Guide Arrow */
         #guide-arrow {
             position: absolute; top: 35%; left: 50%;
             transform: translate(-50%, -50%);
@@ -79,7 +79,7 @@
         }
         @keyframes bounce { 0%, 100% { transform: translate(-50%, -50%) scale(1); } 50% { transform: translate(-50%, -60%) scale(1.1); } }
 
-        /* Snapshot Strip (Scrollable) */
+        /* Snapshot Strip */
         #snapshot-strip {
             position: absolute; top: 10px; left: 0; width: 100%; height: 70px;
             z-index: 20; display: flex; align-items: center; 
@@ -134,7 +134,6 @@
             box-shadow: 0 10px 30px rgba(0,0,0,0.5);
         }
         
-        /* Progress Bar */
         #progress-container {
             width: 100%; height: 4px; background: #333; margin-bottom: 15px;
             border-radius: 2px; overflow: hidden;
@@ -158,9 +157,8 @@
         #btn-action { background: #00ff00; box-shadow: 0 4px 0 #00aa00; }
         #btn-action:active { box-shadow: 0 0 0 #00aa00; }
         
-        /* Layout for the final two buttons */
         #final-controls {
-            display: none; /* Hidden by default, shown at end */
+            display: none; 
             width: 100%;
             flex-direction: row;
             justify-content: space-between;
@@ -168,29 +166,16 @@
             margin-top: 10px;
         }
 
-        #btn-fix { 
-            background: #FF9500; color: white; 
-            font-size: 13px; box-shadow: 0 4px 0 #cc7a00; 
-            flex: 1;
-        }
-        #btn-fix:active { box-shadow: 0 0 0 #cc7a00; }
-
-        #btn-reset { 
-            background: #ff3333; color: white; 
-            font-size: 13px; box-shadow: 0 4px 0 #cc0000; 
-            flex: 1;
-        }
-        #btn-reset:active { box-shadow: 0 0 0 #cc0000; }
+        #btn-fix { background: #FF9500; color: white; font-size: 13px; box-shadow: 0 4px 0 #cc7a00; flex: 1; }
+        #btn-reset { background: #ff3333; color: white; font-size: 13px; box-shadow: 0 4px 0 #cc0000; flex: 1; }
 
         #debug {
-            position: absolute; top: 160px; 
-            left: 10px;
+            position: absolute; top: 160px; left: 10px;
             color: lime; font-size: 10px; z-index: 20;
             background: rgba(0,0,0,0.6); padding: 5px; pointer-events: none;
             white-space: pre-wrap; border-radius: 4px;
         }
 
-        /* 5. VISUALIZER (MINI-MAP) */
         #mini-map-container {
             position: absolute; top: 15px; left: 15px;
             width: 120px; height: 120px;
@@ -200,20 +185,15 @@
             border-radius: 8px;
             box-shadow: 0 0 10px rgba(0, 255, 0, 0.3);
         }
-        #mini-map {
-            width: 100%; height: 100%;
-            border-radius: 8px;
-        }
-        #mini-label {
-            position: absolute; bottom: 2px; right: 4px;
-            color: #00ff00; font-size: 9px; font-weight: bold;
-            opacity: 0.8;
-        }
+        #mini-map { width: 100%; height: 100%; border-radius: 8px; }
+        #mini-label { position: absolute; bottom: 2px; right: 4px; color: #00ff00; font-size: 9px; font-weight: bold; opacity: 0.8; }
 
     </style>
-    <!-- Three.js + GLTFLoader -->
+    <!-- THREE.JS CORE -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <!-- GLTFLOADER & DRACOLOADER -->
     <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/GLTFLoader.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/DRACOLoader.js"></script>
 </head>
 <body>
 
@@ -222,7 +202,6 @@
     
     <div id="speed-warning">УПОВІЛЬНІТЬСЯ: ЗАНАДТО ШВИДКО</div>
 
-    <!-- Mini Map Visualizer -->
     <div id="mini-map-container">
         <canvas id="mini-map"></canvas>
         <div id="mini-label">ПОТРІБНИЙ РАКУРС</div>
@@ -235,10 +214,9 @@
     
     <div id="snapshot-strip"></div>
 
-    <!-- Restored Slider -->
     <div id="slider-label">РОЗМІР</div>
     <div id="slider-container">
-        <input type="range" id="size-slider" min="0.01" max="1.0" step="0.005" value="0.1">
+        <input type="range" id="size-slider" min="0.01" max="1.0" step="0.005" value="0.2">
     </div>
 
     <div id="ui-layer">
@@ -249,7 +227,6 @@
             
             <button id="btn-action">ПОЧАТИ СКАН</button>
             
-            <!-- Dual Buttons for Final State -->
             <div id="final-controls">
                 <button id="btn-fix">ЦЕНТРУВАТИ</button>
                 <button id="btn-reset">ПЕРЕКАЛІБРУВАТИ</button>
@@ -258,9 +235,6 @@
     </div>
 
     <script>
-        // --------------------------------------------------------------------------
-        // CONFIGURATION: THE 10 STEPS
-        // --------------------------------------------------------------------------
         const CAPTURE_STEPS = [
             { id: 'front',      label: "По центру",       desc: "Станьте перед точкою і зробіть фото.",          arrow: "",          offset: new THREE.Vector3(0, 0, 0) },
             { id: 'left',       label: "Лівий ракурс",   desc: "Тепер зліва. Точка по центру кадру.",    arrow: "⬅",         offset: new THREE.Vector3(-0.8, 0, 0) },
@@ -279,9 +253,6 @@
         const ROTATION_SPEED_THRESHOLD = 0.08; 
         const GLB_MODEL_URL = 'https://nd4s.github.io/ai/files/3d_comp.glb';
 
-        // --------------------------------------------------------------------------
-        // 1. SENSOR FUSION
-        // --------------------------------------------------------------------------
         class OrientationManager {
             constructor(camera) {
                 this.camera = camera;
@@ -289,44 +260,32 @@
                 this.enabled = false;
                 this.deviceOrientation = {};
                 this.screenOrientation = 0;
-                
                 this.targetQ = new THREE.Quaternion();
                 this.euler = new THREE.Euler();
                 this.q0 = new THREE.Quaternion();
                 this.q1 = new THREE.Quaternion(-Math.sqrt(0.5), 0, 0, Math.sqrt(0.5)); 
                 this.zee = new THREE.Vector3(0, 0, 1);
                 this.visualCorrectionQ = new THREE.Quaternion();
-                
                 this.lastQ = new THREE.Quaternion();
                 this.rotationSpeed = 0;
-
                 window.addEventListener('deviceorientation', e => this.deviceOrientation = e);
                 window.addEventListener('orientationchange', () => this.screenOrientation = window.orientation || 0);
-                this.screenOrientation = window.orientation || 0;
             }
-
             update() {
                 if (!this.enabled || !this.deviceOrientation.alpha) return;
-
                 const alpha = THREE.Math.degToRad(this.deviceOrientation.alpha || 0);
                 const beta = THREE.Math.degToRad(this.deviceOrientation.beta || 0);
                 const gamma = THREE.Math.degToRad(this.deviceOrientation.gamma || 0);
                 const orient = THREE.Math.degToRad(this.screenOrientation);
-
                 this.euler.set(beta, alpha, -gamma, 'YXZ'); 
                 this.targetQ.setFromEuler(this.euler); 
                 this.targetQ.multiply(this.q1); 
                 this.targetQ.multiply(this.q0.setFromAxisAngle(this.zee, -orient));
-
                 let finalQ = this.targetQ.clone();
                 finalQ.premultiply(this.visualCorrectionQ); 
-                
                 this.rotationSpeed = this.camera.quaternion.angleTo(finalQ);
-                this.lastQ.copy(this.camera.quaternion);
-
                 this.camera.quaternion.slerp(finalQ, 0.15); 
             }
-
             correctDrift(storedSnapshotQ) {
                 const sensorInv = this.targetQ.clone().invert();
                 const drift = storedSnapshotQ.clone().multiply(sensorInv);
@@ -334,28 +293,18 @@
             }
         }
 
-        // --------------------------------------------------------------------------
-        // 2. COMPUTER VISION
-        // --------------------------------------------------------------------------
         const cvCanvas = document.createElement('canvas');
-        cvCanvas.width = CV_SCAN_SIZE;
-        cvCanvas.height = CV_SCAN_SIZE;
+        cvCanvas.width = CV_SCAN_SIZE; cvCanvas.height = CV_SCAN_SIZE;
         const cvCtx = cvCanvas.getContext('2d', { willReadFrequently: true });
 
         function extractVisualFingerprint(videoSource) {
-            const vw = videoSource.videoWidth;
-            const vh = videoSource.videoHeight;
+            const vw = videoSource.videoWidth; const vh = videoSource.videoHeight;
             if(vw === 0 || vh === 0) return null;
-
             const minDim = Math.min(vw, vh);
-            const sx = (vw - minDim) / 2;
-            const sy = (vh - minDim) / 2;
-            
+            const sx = (vw - minDim) / 2; const sy = (vh - minDim) / 2;
             cvCtx.drawImage(videoSource, sx, sy, minDim, minDim, 0, 0, CV_SCAN_SIZE, CV_SCAN_SIZE);
-            const frame = cvCtx.getImageData(0, 0, CV_SCAN_SIZE, CV_SCAN_SIZE);
-            const data = frame.data;
+            const data = cvCtx.getImageData(0, 0, CV_SCAN_SIZE, CV_SCAN_SIZE).data;
             const grayData = new Uint8Array(CV_SCAN_SIZE * CV_SCAN_SIZE);
-
             for (let i = 0; i < data.length; i += 4) {
                 grayData[i/4] = 0.299*data[i] + 0.587*data[i+1] + 0.114*data[i+2];
             }
@@ -365,15 +314,10 @@
         function compareFingerprints(fp1, fp2) {
             if(!fp1 || !fp2) return 255;
             let diff = 0;
-            for (let i = 0; i < fp1.length; i++) {
-                diff += Math.abs(fp1[i] - fp2[i]);
-            }
+            for (let i = 0; i < fp1.length; i++) diff += Math.abs(fp1[i] - fp2[i]);
             return diff / fp1.length;
         }
 
-        // --------------------------------------------------------------------------
-        // 3. MAIN APP
-        // --------------------------------------------------------------------------
         const video = document.getElementById('camera-feed');
         const canvas = document.getElementById('ar-overlay');
         const debug = document.getElementById('debug');
@@ -381,28 +325,20 @@
         const lockIndicator = document.getElementById('lock-indicator');
         const guideArrow = document.getElementById('guide-arrow');
         const speedWarning = document.getElementById('speed-warning');
-        
         const uiStep = document.getElementById('lbl-step');
         const uiDesc = document.getElementById('lbl-desc');
         const btnAction = document.getElementById('btn-action');
-        
         const finalControls = document.getElementById('final-controls');
         const btnFix = document.getElementById('btn-fix');
         const btnReset = document.getElementById('btn-reset');
-        
         const progressFill = document.getElementById('progress-fill');
         const slider = document.getElementById('size-slider');
 
-        let scene, camera, renderer, controls;
-        let worldRoot, markerMesh;
-        let glbLoader = new THREE.GLTFLoader();
-        
+        let scene, camera, renderer, controls, worldRoot, markerMesh;
         let miniScene, miniCam, miniRenderer, miniTargetMarker;
-
         let capturedPoints = []; 
         let stepIndex = 0; 
         let isSetupComplete = false;
-
         const raycaster = new THREE.Raycaster();
         const centerScreen = new THREE.Vector2(0, 0);
 
@@ -412,8 +348,7 @@
                     video: { facingMode: 'environment', width: { ideal: 640 }, height: { ideal: 480 } },
                     audio: false
                 });
-                video.srcObject = stream;
-                video.play();
+                video.srcObject = stream; video.play();
             } catch (e) { debug.innerText = "Помилка камери: " + e.message; }
         }
 
@@ -421,9 +356,7 @@
             scene = new THREE.Scene();
             worldRoot = new THREE.Group();
             scene.add(worldRoot);
-
             camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 100);
-            
             renderer = new THREE.WebGLRenderer({ canvas: canvas, alpha: true, antialias: true });
             renderer.setSize(window.innerWidth, window.innerHeight);
             renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
@@ -441,25 +374,17 @@
             const miniCanvas = document.getElementById('mini-map');
             miniRenderer = new THREE.WebGLRenderer({ canvas: miniCanvas, alpha: true, antialias: true });
             miniRenderer.setSize(120, 120);
-
             miniScene = new THREE.Scene();
-
             const objGeo = new THREE.BoxGeometry(0.5, 0.5, 0.5);
             const objMat = new THREE.MeshBasicMaterial({ color: 0x00ff00, wireframe: true });
-            const objMesh = new THREE.Mesh(objGeo, objMat);
-            miniScene.add(objMesh);
-
-            const grid = new THREE.GridHelper(4, 8, 0x444444, 0x222222);
-            miniScene.add(grid);
-
+            miniScene.add(new THREE.Mesh(objGeo, objMat));
+            miniScene.add(new THREE.GridHelper(4, 8, 0x444444, 0x222222));
             const coneGeo = new THREE.ConeGeometry(0.15, 0.4, 8);
             coneGeo.rotateX(Math.PI / 2); 
-            const coneMat = new THREE.MeshBasicMaterial({ color: 0xffff00 });
-            miniTargetMarker = new THREE.Mesh(coneGeo, coneMat);
+            miniTargetMarker = new THREE.Mesh(coneGeo, new THREE.MeshBasicMaterial({ color: 0xffff00 }));
             miniTargetMarker.position.set(0, 0, 1.5); 
             miniTargetMarker.lookAt(0,0,0);
             miniScene.add(miniTargetMarker);
-
             miniCam = new THREE.PerspectiveCamera(50, 1, 0.1, 20);
             miniCam.position.set(2.5, 2.0, 2.5);
             miniCam.lookAt(0, 0, 0);
@@ -468,29 +393,21 @@
         slider.addEventListener('input', (e) => {
             const newSize = parseFloat(e.target.value);
             if (markerMesh) {
-                // Scale 3D model uniformly
                 markerMesh.scale.set(newSize, newSize, newSize);
                 debug.innerText = `Розмір: ${(newSize * 100).toFixed(0)}%`;
             }
         });
 
-        // --------------------------------------------------------------------------
-        // 4. INTERACTION FLOW
-        // --------------------------------------------------------------------------
         btnAction.addEventListener('click', () => {
             if (stepIndex === 0) {
                 if (typeof DeviceOrientationEvent?.requestPermission === 'function') {
                     DeviceOrientationEvent.requestPermission().then(res => { if (res === 'granted') startCalibration(); });
-                } else {
-                    startCalibration();
-                }
-            } else if (stepIndex <= CAPTURE_STEPS.length) {
-                captureStep();
-            }
+                } else startCalibration();
+            } else if (stepIndex <= CAPTURE_STEPS.length) captureStep();
         });
 
         btnFix.addEventListener('click', manualFixLogic);
-        btnReset.addEventListener('click', resetCalibration);
+        btnReset.addEventListener('click', () => location.reload());
 
         function startCalibration() {
             controls = new OrientationManager(camera);
@@ -500,66 +417,24 @@
             updateUI();
         }
 
-        function resetCalibration() {
-            capturedPoints = [];
-            stepIndex = 0;
-            isSetupComplete = false;
-            
-            if(markerMesh) {
-                worldRoot.remove(markerMesh);
-                markerMesh = null;
-            }
-
-            snapStrip.innerHTML = '';
-            progressFill.style.width = '0%';
-            uiStep.innerText = "ІНІЦІАЛІЗАЦІЯ";
-            uiDesc.innerText = "Калібрування сенсорів.";
-            
-            finalControls.style.display = 'none';
-            btnAction.style.display = 'block';
-            btnAction.innerText = "ПОЧАТИ СКАН";
-            
-            if(miniTargetMarker) {
-                miniTargetMarker.visible = true;
-                miniTargetMarker.position.set(0, 0, 1.5);
-            }
-            
-            debug.innerText = "Система перезапущена.";
-        }
-
         function updateUI() {
             if(stepIndex > CAPTURE_STEPS.length) return;
-
             const cfg = CAPTURE_STEPS[stepIndex - 1];
             uiStep.innerText = `${cfg.label} (${stepIndex}/${CAPTURE_STEPS.length})`;
             uiDesc.innerText = cfg.desc;
-            
-            const pct = ((stepIndex - 1) / CAPTURE_STEPS.length) * 100;
-            progressFill.style.width = `${pct}%`;
-
+            progressFill.style.width = `${((stepIndex - 1) / CAPTURE_STEPS.length) * 100}%`;
             if (miniTargetMarker) {
-                if (cfg.offset.lengthSq() === 0) {
-                    miniTargetMarker.position.set(0, 0, 0.8);
-                } else {
-                    miniTargetMarker.position.copy(cfg.offset);
-                }
+                miniTargetMarker.position.copy(cfg.offset.lengthSq() === 0 ? new THREE.Vector3(0,0,0.8) : cfg.offset);
                 miniTargetMarker.lookAt(0,0,0);
             }
-
-            if(cfg.arrow && cfg.arrow !== "NO_ARROW") {
-                guideArrow.style.display = 'block';
-                guideArrow.innerText = cfg.arrow;
-            } else {
-                guideArrow.style.display = 'none';
-            }
+            guideArrow.style.display = (cfg.arrow && cfg.arrow !== "NO_ARROW") ? 'block' : 'none';
+            if (guideArrow.style.display === 'block') guideArrow.innerText = cfg.arrow;
         }
 
         function captureStep() {
             const cfg = CAPTURE_STEPS[stepIndex - 1];
             raycaster.setFromCamera(centerScreen, camera);
             const rawDir = raycaster.ray.direction.clone();
-            const currentQuat = camera.quaternion.clone();
-
             const fingerprint = extractVisualFingerprint(video);
             if(!fingerprint) return; 
 
@@ -569,30 +444,18 @@
             let sx=0, sy=0, sWidth=video.videoWidth, sHeight=video.videoHeight;
             if(vRatio > 1) { sx = (video.videoWidth - video.videoHeight)/2; sWidth = video.videoHeight; }
             else { sy = (video.videoHeight - video.videoWidth)/2; sHeight = video.videoWidth; }
-            
             canvasSnap.getContext('2d').drawImage(video, sx, sy, sWidth, sHeight, 0, 0, 64, 64);
             
             const thumbImg = document.createElement('img');
-            thumbImg.src = canvasSnap.toDataURL();
-            thumbImg.className = 'snap-thumb';
+            thumbImg.src = canvasSnap.toDataURL(); thumbImg.className = 'snap-thumb';
             thumbImg.id = `thumb-${stepIndex}`;
             snapStrip.appendChild(thumbImg);
             snapStrip.scrollLeft = snapStrip.scrollWidth;
 
-            capturedPoints.push({ 
-                origin: cfg.offset.clone(), 
-                direction: rawDir,
-                quaternion: currentQuat, 
-                visualData: fingerprint,
-                uiId: `thumb-${stepIndex}`
-            });
-
+            capturedPoints.push({ origin: cfg.offset.clone(), direction: rawDir, quaternion: camera.quaternion.clone(), visualData: fingerprint, uiId: `thumb-${stepIndex}` });
             stepIndex++;
-            if (stepIndex > CAPTURE_STEPS.length) {
-                finalizeSetup();
-            } else {
-                updateUI();
-            }
+            if (stepIndex > CAPTURE_STEPS.length) finalizeSetup();
+            else updateUI();
         }
 
         function finalizeSetup() {
@@ -602,168 +465,104 @@
             calculateIntersection();
             isSetupComplete = true;
             uiStep.innerText = "СТЕЖЕННЯ АКТИВНЕ";
-            uiDesc.innerText = "3D модель розміщена. Рухайтесь вільно.";
+            uiDesc.innerText = "3D модель розміщена.";
             btnAction.style.display = 'none';
             finalControls.style.display = 'flex';
         }
 
-        // --------------------------------------------------------------------------
-        // 5. MATH & 3D LOADING
-        // --------------------------------------------------------------------------
         function calculateIntersection() {
             let accumulatedPoint = new THREE.Vector3(0,0,0);
             let count = 0;
             for (let i = 0; i < capturedPoints.length; i++) {
                 for (let j = i + 1; j < capturedPoints.length; j++) {
-                    const result = closestPointBetweenRays(capturedPoints[i], capturedPoints[j]);
-                    if (result) {
-                        accumulatedPoint.add(result);
-                        count++;
-                    }
+                    const p1 = capturedPoints[i].origin, d1 = capturedPoints[i].direction;
+                    const p2 = capturedPoints[j].origin, d2 = capturedPoints[j].direction;
+                    const n = new THREE.Vector3().crossVectors(d1, d2);
+                    const n2 = n.lengthSq();
+                    if (n2 < 0.001) continue;
+                    const d12 = new THREE.Vector3().subVectors(p2, p1);
+                    const t = d12.dot(new THREE.Vector3().crossVectors(d2, n)) / n2;
+                    const u = d12.dot(new THREE.Vector3().crossVectors(d1, n)) / n2;
+                    accumulatedPoint.add(new THREE.Vector3().addVectors(p1.clone().add(d1.clone().multiplyScalar(t)), p2.clone().add(d2.clone().multiplyScalar(u))).multiplyScalar(0.5));
+                    count++;
                 }
             }
-            if (count > 0) accumulatedPoint.divideScalar(count);
-            else accumulatedPoint.set(0, -1.0, -2); 
-            placeObject(accumulatedPoint);
-        }
-
-        function closestPointBetweenRays(r1, r2) {
-            const p1 = r1.origin; const d1 = r1.direction;
-            const p2 = r2.origin; const d2 = r2.direction;
-            const n = new THREE.Vector3().crossVectors(d1, d2);
-            const n2 = n.lengthSq();
-            if (n2 < 0.001) return null;
-            const d12 = new THREE.Vector3().subVectors(p2, p1);
-            const t = d12.dot(new THREE.Vector3().crossVectors(d2, n)) / n2;
-            const u = d12.dot(new THREE.Vector3().crossVectors(d1, n)) / n2;
-            const pos1 = p1.clone().add(d1.clone().multiplyScalar(t));
-            const pos2 = p2.clone().add(d2.clone().multiplyScalar(u));
-            return new THREE.Vector3().addVectors(pos1, pos2).multiplyScalar(0.5);
+            placeObject(count > 0 ? accumulatedPoint.divideScalar(count) : new THREE.Vector3(0, -1, -2));
         }
 
         function placeObject(pos) {
-            // Create a parent container for the model
-            const container = new THREE.Group();
-            container.position.copy(pos);
-            worldRoot.add(container);
-            markerMesh = container;
+            markerMesh = new THREE.Group();
+            markerMesh.position.copy(pos);
+            worldRoot.add(markerMesh);
 
-            // Load GLB Model
-            debug.innerText = "Завантаження 3D моделі...";
+            debug.innerText = "Завантаження Draco 3D моделі...";
+            
+            // CONFIGURE DRACO DECODER
+            const dracoLoader = new THREE.DRACOLoader();
+            dracoLoader.setDecoderPath('https://www.gstatic.com/draco/versioned/decoders/1.4.1/');
+            
+            const glbLoader = new THREE.GLTFLoader();
+            glbLoader.setDRACOLoader(dracoLoader);
+
             glbLoader.load(GLB_MODEL_URL, (gltf) => {
-                const model = gltf.scene;
-                
-                // Initial scale from slider
                 const initialScale = parseFloat(slider.value);
-                container.scale.set(initialScale, initialScale, initialScale);
-                
-                container.add(model);
-                debug.innerText = "Модель завантажена успішно.";
-            }, undefined, (error) => {
-                debug.innerText = "Помилка завантаження моделі: " + error.message;
-            });
+                markerMesh.scale.set(initialScale, initialScale, initialScale);
+                markerMesh.add(gltf.scene);
+                debug.innerText = "Модель готова.";
+            }, undefined, (e) => { debug.innerText = "Помилка завантаження: " + e.message; });
         }
 
         function manualFixLogic() {
             if(!markerMesh) return;
             raycaster.setFromCamera(centerScreen, camera);
-            const groundY = markerMesh.position.y;
-            const origin = raycaster.ray.origin;
             const dir = raycaster.ray.direction;
             if (Math.abs(dir.y) < 0.01) return; 
-            const t = (groundY - origin.y) / dir.y;
-            if (t < 0) return; 
-            const hitPoint = new THREE.Vector3().copy(origin).add(dir.multiplyScalar(t));
-            markerMesh.position.x = hitPoint.x;
-            markerMesh.position.z = hitPoint.z;
-        }
-
-        // --------------------------------------------------------------------------
-        // 6. ENGINE LOOP
-        // --------------------------------------------------------------------------
-        let frameCount = 0;
-        let lastVisualFingerprint = null;
-
-        function runVisualLocalization() {
-            if (!controls) return;
-
-            const currentFingerprint = extractVisualFingerprint(video);
-            let visualDelta = 0;
-            if (lastVisualFingerprint && currentFingerprint) {
-                visualDelta = compareFingerprints(currentFingerprint, lastVisualFingerprint);
-            }
-            lastVisualFingerprint = currentFingerprint;
-
-            if (controls.rotationSpeed > ROTATION_SPEED_THRESHOLD || visualDelta > 50) {
-                speedWarning.style.display = 'block';
-            } else {
-                speedWarning.style.display = 'none';
-            }
-
-            if (!isSetupComplete || capturedPoints.length === 0) return;
-            if (frameCount % 5 !== 0) return;
-
-            const currentQ = camera.quaternion;
-            let bestMatchDiff = 999;
-            let bestMatchIdx = -1;
-
-            for (let i = 0; i < capturedPoints.length; i++) {
-                const angleDiff = currentQ.angleTo(capturedPoints[i].quaternion);
-                if (angleDiff < 0.45) { 
-                    const diff = compareFingerprints(currentFingerprint, capturedPoints[i].visualData);
-                    if (diff < bestMatchDiff) {
-                        bestMatchDiff = diff;
-                        bestMatchIdx = i;
-                    }
-                }
-            }
-
-            document.querySelectorAll('.snap-thumb').forEach(el => el.classList.remove('active-lock'));
-            lockIndicator.classList.remove('locked');
-
-            if (bestMatchIdx !== -1 && bestMatchDiff < VISUAL_THRESHOLD) {
-                lockIndicator.classList.add('locked');
-                const match = capturedPoints[bestMatchIdx];
-                const thumb = document.getElementById(match.uiId);
-                if(thumb) thumb.classList.add('active-lock');
-                
-                controls.correctDrift(match.quaternion);
-
-                if (markerMesh) {
-                    raycaster.setFromCamera(centerScreen, camera);
-                    const groundY = markerMesh.position.y;
-                    const origin = raycaster.ray.origin;
-                    const dir = raycaster.ray.direction;
-                    if (Math.abs(dir.y) > 0.05) { 
-                        const t = (groundY - origin.y) / dir.y;
-                        if (t > 0) {
-                            const targetPos = new THREE.Vector3().copy(origin).add(dir.multiplyScalar(t));
-                            markerMesh.position.x += (targetPos.x - markerMesh.position.x) * 0.1;
-                            markerMesh.position.z += (targetPos.z - markerMesh.position.z) * 0.1;
-                        }
-                    }
-                }
+            const t = (markerMesh.position.y - raycaster.ray.origin.y) / dir.y;
+            if (t > 0) {
+                const hit = new THREE.Vector3().copy(raycaster.ray.origin).add(dir.multiplyScalar(t));
+                markerMesh.position.x = hit.x; markerMesh.position.z = hit.z;
             }
         }
 
+        let frameCount = 0, lastVisualFingerprint = null;
         function animate() {
             requestAnimationFrame(animate);
             frameCount++;
             if (controls) controls.update();
-            runVisualLocalization();
+            const currentFingerprint = extractVisualFingerprint(video);
+            if (controls && lastVisualFingerprint && currentFingerprint) {
+                const visualDelta = compareFingerprints(currentFingerprint, lastVisualFingerprint);
+                speedWarning.style.display = (controls.rotationSpeed > ROTATION_SPEED_THRESHOLD || visualDelta > 50) ? 'block' : 'none';
+            }
+            lastVisualFingerprint = currentFingerprint;
+
+            if (isSetupComplete && capturedPoints.length > 0 && frameCount % 5 === 0) {
+                let bestMatchDiff = 999, bestMatchIdx = -1;
+                for (let i = 0; i < capturedPoints.length; i++) {
+                    if (camera.quaternion.angleTo(capturedPoints[i].quaternion) < 0.45) {
+                        const diff = compareFingerprints(currentFingerprint, capturedPoints[i].visualData);
+                        if (diff < bestMatchDiff) { bestMatchDiff = diff; bestMatchIdx = i; }
+                    }
+                }
+                document.querySelectorAll('.snap-thumb').forEach(el => el.classList.remove('active-lock'));
+                lockIndicator.classList.remove('locked');
+                if (bestMatchIdx !== -1 && bestMatchDiff < VISUAL_THRESHOLD) {
+                    lockIndicator.classList.add('locked');
+                    const match = capturedPoints[bestMatchIdx];
+                    document.getElementById(match.uiId)?.classList.add('active-lock');
+                    controls.correctDrift(match.quaternion);
+                }
+            }
             renderer.render(scene, camera);
             if(miniRenderer) miniRenderer.render(miniScene, miniCam);
         }
 
         window.addEventListener('resize', () => {
-            camera.aspect = window.innerWidth / window.innerHeight;
-            camera.updateProjectionMatrix();
+            camera.aspect = window.innerWidth / window.innerHeight; camera.updateProjectionMatrix();
             renderer.setSize(window.innerWidth, window.innerHeight);
         });
 
-        initCamera();
-        initThree();
-
+        initCamera(); initThree();
     </script>
 </body>
 </html>
