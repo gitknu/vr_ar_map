@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Offline Map & AR Precision Tool</title>
+    <title>Offline Map & Hybrid AR Tool</title>
     
     <!-- AR Libraries -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
@@ -735,9 +735,8 @@
         { id: 'iso_rb',     label: "Згори-справа позаду", desc: "І останнє. Згори-справа позаду",                   arrow: "NO_ARROW",  offset: new THREE.Vector3(1.0, 0, 0.5) }
     ];
     
-    // UPDATED: Increased slightly to capture more structural edge detail
-    const CV_SCAN_SIZE = 48; 
-    const VISUAL_THRESHOLD = 35; // Adjusted for edge magnitude
+    const CV_SCAN_SIZE = 40; // Balanced for pixel+edge performance
+    const VISUAL_THRESHOLD = 30; // Hybrid threshold
     const ROTATION_SPEED_THRESHOLD = 0.08;
 
     // AR Variables
@@ -816,17 +815,15 @@
     }
 
     /**
-     * UPDATED COMPUTER VISION
-     * Replaced simple pixel average with Edge Detection (Sobel Operator).
-     * This creates a fingerprint based on "structural lines" (corners, silhouettes)
-     * rather than exact lighting/color.
+     * HYBRID VISUAL ENGINE
+     * Returns both raw Pixel data (Texture) and Edge data (Structure).
      */
     function extractVisualFingerprint(videoSource) {
         if(videoSource.readyState < 2) return null;
         const vw = videoSource.videoWidth, vh = videoSource.videoHeight;
         if(vw === 0 || vh === 0) return null;
         
-        // 1. Draw frame to canvas
+        // 1. Draw to canvas
         const minDim = Math.min(vw, vh);
         const sx = (vw - minDim) / 2, sy = (vh - minDim) / 2;
         cvCtx.drawImage(videoSource, sx, sy, minDim, minDim, 0, 0, CV_SCAN_SIZE, CV_SCAN_SIZE);
@@ -835,50 +832,63 @@
         const data = frame.data;
         const width = CV_SCAN_SIZE;
         const height = CV_SCAN_SIZE;
+        const size = width * height;
         
-        // 2. Convert to Grayscale
-        const gray = new Float32Array(width * height);
+        // Output arrays
+        const pixels = new Uint8Array(size);
+        const edges = new Uint8Array(size);
+
+        // 2. Extract Grayscale (Texture Layer)
         for (let i = 0; i < data.length; i += 4) {
-            gray[i/4] = 0.299*data[i] + 0.587*data[i+1] + 0.114*data[i+2];
+            pixels[i/4] = 0.299*data[i] + 0.587*data[i+1] + 0.114*data[i+2];
         }
 
-        // 3. Sobel Edge Detection (Gradient Magnitude)
-        // We compute the magnitude of edges to find silhouette/corners
-        const edges = new Uint8Array(width * height);
-        
+        // 3. Sobel Edge Detection (Structure Layer)
         for (let y = 1; y < height - 1; y++) {
             for (let x = 1; x < width - 1; x++) {
                 const idx = y * width + x;
-                
                 // Sobel Kernels
-                // Gx: [-1, 0, 1], [-2, 0, 2], [-1, 0, 1]
-                const gx = -1*gray[idx - width - 1] + 1*gray[idx - width + 1] +
-                           -2*gray[idx - 1]         + 2*gray[idx + 1] +
-                           -1*gray[idx + width - 1] + 1*gray[idx + width + 1];
+                const gx = -1*pixels[idx - width - 1] + 1*pixels[idx - width + 1] +
+                           -2*pixels[idx - 1]         + 2*pixels[idx + 1] +
+                           -1*pixels[idx + width - 1] + 1*pixels[idx + width + 1];
 
-                // Gy: [-1, -2, -1], [0, 0, 0], [1, 2, 1]
-                const gy = -1*gray[idx - width - 1] - 2*gray[idx - width] - 1*gray[idx - width + 1] +
-                            1*gray[idx + width - 1] + 2*gray[idx + width] + 1*gray[idx + width + 1];
+                const gy = -1*pixels[idx - width - 1] - 2*pixels[idx - width] - 1*pixels[idx - width + 1] +
+                            1*pixels[idx + width - 1] + 2*pixels[idx + width] + 1*pixels[idx + width + 1];
 
-                // Magnitude
                 let mag = Math.sqrt(gx*gx + gy*gy);
-                
-                // Clamp to byte
                 if (mag > 255) mag = 255;
                 edges[idx] = mag; 
             }
         }
-        return edges;
+
+        return { pixels: pixels, edges: edges };
     }
 
+    /**
+     * Hybrid comparison:
+     * 50% Pixel Match (Exactness)
+     * 50% Edge Match (Generous Structure)
+     */
     function compareFingerprints(fp1, fp2) {
         if(!fp1 || !fp2) return 255;
-        let diff = 0;
-        // Compare structural edge maps
-        for (let i = 0; i < fp1.length; i++) {
-            diff += Math.abs(fp1[i] - fp2[i]);
+        
+        // 1. Pixel Diff
+        let diffP = 0;
+        const len = fp1.pixels.length;
+        for (let i = 0; i < len; i++) {
+            diffP += Math.abs(fp1.pixels[i] - fp2.pixels[i]);
         }
-        return diff / fp1.length;
+        const scoreP = diffP / len;
+
+        // 2. Edge Diff
+        let diffE = 0;
+        for (let i = 0; i < len; i++) {
+            diffE += Math.abs(fp1.edges[i] - fp2.edges[i]);
+        }
+        const scoreE = diffE / len;
+
+        // Weighted Mix
+        return (scoreP * 0.5) + (scoreE * 0.5);
     }
 
     async function initCamera() {
@@ -988,6 +998,8 @@
         raycaster.setFromCamera(centerScreen, camera);
         const rawDir = raycaster.ray.direction.clone();
         const currentQuat = camera.quaternion.clone();
+        
+        // Extract Hybrid Data
         const fingerprint = extractVisualFingerprint(video);
         if(!fingerprint) return; 
         
@@ -1065,7 +1077,11 @@
         if (!arControls) return;
         const currentFingerprint = extractVisualFingerprint(video);
         let visualDelta = 0;
-        if (lastVisualFingerprint && currentFingerprint) visualDelta = compareFingerprints(currentFingerprint, lastVisualFingerprint);
+        
+        // Compare with last frame for motion warning
+        if (lastVisualFingerprint && currentFingerprint) {
+            visualDelta = compareFingerprints(currentFingerprint, lastVisualFingerprint);
+        }
         lastVisualFingerprint = currentFingerprint;
 
         if (arControls.rotationSpeed > ROTATION_SPEED_THRESHOLD || visualDelta > 50) speedWarning.style.display = 'block';
@@ -1075,7 +1091,9 @@
 
         const currentQ = camera.quaternion;
         let bestMatchDiff = 999, bestMatchIdx = -1;
+        
         for (let i = 0; i < capturedPoints.length; i++) {
+            // Angle check: generous 0.45 rad (approx 25 deg)
             if (currentQ.angleTo(capturedPoints[i].quaternion) < 0.45) { 
                 const diff = compareFingerprints(currentFingerprint, capturedPoints[i].visualData);
                 if (diff < bestMatchDiff) { bestMatchDiff = diff; bestMatchIdx = i; }
@@ -1085,6 +1103,7 @@
         document.querySelectorAll('.snap-thumb').forEach(el => el.classList.remove('active-lock'));
         lockIndicator.classList.remove('locked');
 
+        // VISUAL_THRESHOLD check handles the "Exactness"
         if (bestMatchIdx !== -1 && bestMatchDiff < VISUAL_THRESHOLD) {
             lockIndicator.classList.add('locked');
             const match = capturedPoints[bestMatchIdx];
