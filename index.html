@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Offline Map & Hybrid AR Tool</title>
+    <title>Offline Map & AR Precision Tool</title>
     
     <!-- AR Libraries -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
@@ -735,8 +735,9 @@
         { id: 'iso_rb',     label: "Згори-справа позаду", desc: "І останнє. Згори-справа позаду",                   arrow: "NO_ARROW",  offset: new THREE.Vector3(1.0, 0, 0.5) }
     ];
     
-    const CV_SCAN_SIZE = 40; // Balanced for pixel+edge performance
-    const VISUAL_THRESHOLD = 30; // Hybrid threshold
+    const CV_SCAN_SIZE = 32; 
+    const PIXEL_THRESHOLD = 30; // Strict pixel match
+    const EDGE_THRESHOLD = 35;  // Slightly looser silhouette match
     const ROTATION_SPEED_THRESHOLD = 0.08;
 
     // AR Variables
@@ -807,16 +808,16 @@
             this.lastQ.copy(this.camera.quaternion);
             this.camera.quaternion.slerp(finalQ, 0.15); 
         }
-        correctDrift(storedSnapshotQ) {
+        correctDrift(storedSnapshotQ, strength = 0.08) {
             const sensorInv = this.targetQ.clone().invert();
             const drift = storedSnapshotQ.clone().multiply(sensorInv);
-            this.visualCorrectionQ.slerp(drift, 0.08); 
+            this.visualCorrectionQ.slerp(drift, strength); 
         }
     }
 
     /**
-     * HYBRID VISUAL ENGINE
-     * Returns both raw Pixel data (Texture) and Edge data (Structure).
+     * EXTRACTS BOTH PIXELS AND EDGES
+     * To support exact matches AND silhouettes.
      */
     function extractVisualFingerprint(videoSource) {
         if(videoSource.readyState < 2) return null;
@@ -834,20 +835,18 @@
         const height = CV_SCAN_SIZE;
         const size = width * height;
         
-        // Output arrays
         const pixels = new Uint8Array(size);
         const edges = new Uint8Array(size);
 
-        // 2. Extract Grayscale (Texture Layer)
+        // 2. Grayscale (Pixels)
         for (let i = 0; i < data.length; i += 4) {
             pixels[i/4] = 0.299*data[i] + 0.587*data[i+1] + 0.114*data[i+2];
         }
 
-        // 3. Sobel Edge Detection (Structure Layer)
+        // 3. Edges (Sobel)
         for (let y = 1; y < height - 1; y++) {
             for (let x = 1; x < width - 1; x++) {
                 const idx = y * width + x;
-                // Sobel Kernels
                 const gx = -1*pixels[idx - width - 1] + 1*pixels[idx - width + 1] +
                            -2*pixels[idx - 1]         + 2*pixels[idx + 1] +
                            -1*pixels[idx + width - 1] + 1*pixels[idx + width + 1];
@@ -860,35 +859,28 @@
                 edges[idx] = mag; 
             }
         }
-
         return { pixels: pixels, edges: edges };
     }
 
     /**
-     * Hybrid comparison:
-     * 50% Pixel Match (Exactness)
-     * 50% Edge Match (Generous Structure)
+     * DUAL-CHECK LOGIC
+     * Returns an object { pixelScore, edgeScore }
      */
     function compareFingerprints(fp1, fp2) {
-        if(!fp1 || !fp2) return 255;
+        if(!fp1 || !fp2) return { pixelScore: 999, edgeScore: 999 };
         
-        // 1. Pixel Diff
-        let diffP = 0;
+        let diffP = 0, diffE = 0;
         const len = fp1.pixels.length;
+
         for (let i = 0; i < len; i++) {
             diffP += Math.abs(fp1.pixels[i] - fp2.pixels[i]);
-        }
-        const scoreP = diffP / len;
-
-        // 2. Edge Diff
-        let diffE = 0;
-        for (let i = 0; i < len; i++) {
             diffE += Math.abs(fp1.edges[i] - fp2.edges[i]);
         }
-        const scoreE = diffE / len;
-
-        // Weighted Mix
-        return (scoreP * 0.5) + (scoreE * 0.5);
+        
+        return { 
+            pixelScore: diffP / len,
+            edgeScore: diffE / len
+        };
     }
 
     async function initCamera() {
@@ -999,7 +991,6 @@
         const rawDir = raycaster.ray.direction.clone();
         const currentQuat = camera.quaternion.clone();
         
-        // Extract Hybrid Data
         const fingerprint = extractVisualFingerprint(video);
         if(!fingerprint) return; 
         
@@ -1076,11 +1067,15 @@
     function runVisualLocalization() {
         if (!arControls) return;
         const currentFingerprint = extractVisualFingerprint(video);
-        let visualDelta = 0;
         
-        // Compare with last frame for motion warning
+        // --- Speed Check (uses Pixel diff because it's sensitive to motion) ---
+        let visualDelta = 0;
         if (lastVisualFingerprint && currentFingerprint) {
-            visualDelta = compareFingerprints(currentFingerprint, lastVisualFingerprint);
+            let diff = 0;
+            for(let k=0; k<currentFingerprint.pixels.length; k+=4) { // Sample sparsely for speed
+                diff += Math.abs(currentFingerprint.pixels[k] - lastVisualFingerprint.pixels[k]);
+            }
+            visualDelta = diff / (currentFingerprint.pixels.length/4);
         }
         lastVisualFingerprint = currentFingerprint;
 
@@ -1090,27 +1085,59 @@
         if (!isSetupComplete || capturedPoints.length === 0 || frameCount % 5 !== 0) return;
 
         const currentQ = camera.quaternion;
-        let bestMatchDiff = 999, bestMatchIdx = -1;
+        let bestMatchDiff = 999;
+        let bestMatchIdx = -1;
+        let matchType = ""; // "EXACT" or "SILHOUETTE"
         
         for (let i = 0; i < capturedPoints.length; i++) {
-            // Angle check: generous 0.45 rad (approx 25 deg)
+            // Rough Angle check
             if (currentQ.angleTo(capturedPoints[i].quaternion) < 0.45) { 
-                const diff = compareFingerprints(currentFingerprint, capturedPoints[i].visualData);
-                if (diff < bestMatchDiff) { bestMatchDiff = diff; bestMatchIdx = i; }
+                
+                const scores = compareFingerprints(currentFingerprint, capturedPoints[i].visualData);
+                
+                // LOGIC:
+                // 1. Check Exact Match (Pixel)
+                if (scores.pixelScore < PIXEL_THRESHOLD) {
+                    if (scores.pixelScore < bestMatchDiff) {
+                        bestMatchDiff = scores.pixelScore;
+                        bestMatchIdx = i;
+                        matchType = "EXACT";
+                    }
+                } 
+                // 2. Check Silhouette Fallback (Edge) if Exact fail
+                else if (scores.edgeScore < EDGE_THRESHOLD) {
+                     // We accept this ONLY if we haven't found an EXACT match yet
+                     if (matchType !== "EXACT" && scores.edgeScore < bestMatchDiff) {
+                         bestMatchDiff = scores.edgeScore;
+                         bestMatchIdx = i;
+                         matchType = "SILHOUETTE";
+                     }
+                }
             }
         }
 
         document.querySelectorAll('.snap-thumb').forEach(el => el.classList.remove('active-lock'));
         lockIndicator.classList.remove('locked');
+        lockIndicator.style.borderColor = "cyan";
 
-        // VISUAL_THRESHOLD check handles the "Exactness"
-        if (bestMatchIdx !== -1 && bestMatchDiff < VISUAL_THRESHOLD) {
-            lockIndicator.classList.add('locked');
+        if (bestMatchIdx !== -1) {
             const match = capturedPoints[bestMatchIdx];
             const thumb = document.getElementById(match.uiId);
             if(thumb) thumb.classList.add('active-lock');
-            arControls.correctDrift(match.quaternion);
+            
+            lockIndicator.classList.add('locked');
+            
+            // Correction Strength: Stronger for Silhouette to prevent float
+            // Weaker for Exact to prevent jitter
+            const strength = (matchType === "SILHOUETTE") ? 0.2 : 0.08;
+            
+            if (matchType === "SILHOUETTE") lockIndicator.style.borderColor = "orange"; // Visual cue
+            else lockIndicator.style.borderColor = "lime";
+
+            arControls.correctDrift(match.quaternion, strength);
+            
             if (markerMesh) {
+                // Positional correction logic
                 raycaster.setFromCamera(centerScreen, camera);
                 const groundY = markerMesh.position.y;
                 const dir = raycaster.ray.direction, origin = raycaster.ray.origin;
@@ -1118,13 +1145,16 @@
                     const t = (groundY - origin.y) / dir.y;
                     if (t > 0) {
                         const targetPos = new THREE.Vector3().copy(origin).add(dir.multiplyScalar(t));
+                        // Interpolate position
                         markerMesh.position.x += (targetPos.x - markerMesh.position.x) * 0.1;
                         markerMesh.position.z += (targetPos.z - markerMesh.position.z) * 0.1;
                     }
                 }
             }
-            debug.innerText = `ЗАХОПЛЕНО: Кадр ${bestMatchIdx+1} | Різн: ${bestMatchDiff.toFixed(1)}`;
-        } else debug.innerText = `Пошук... Краще: ${bestMatchDiff > 200 ? '-' : bestMatchDiff.toFixed(1)}`;
+            debug.innerText = `LOCKED [${matchType}]: #${bestMatchIdx+1} (Diff: ${bestMatchDiff.toFixed(1)})`;
+        } else {
+            debug.innerText = `Scanning...`;
+        }
     }
 
     function animate() {
