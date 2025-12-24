@@ -746,10 +746,9 @@
         { id: 'iso_rb',     label: "Згори-справа позаду", desc: "І останнє. Згори-справа позаду",                   arrow: "NO_ARROW",  offset: new THREE.Vector3(1.0, 0, 0.5) }
     ];
     
-    // UPDATED: Standard size, strict thresholds for pixels, generous for edges
     const CV_SCAN_SIZE = 32; 
-    const PIXEL_THRESHOLD = 40; // STRICT: Only matches if pixels are very close
-    const EDGE_THRESHOLD = 40;  // LOOSE: Matches if silhouette is similar
+    const PIXEL_THRESHOLD = 40; 
+    const EDGE_THRESHOLD = 40;  
     const ROTATION_SPEED_THRESHOLD = 0.08;
 
     // AR Variables
@@ -827,11 +826,6 @@
         }
     }
 
-    /**
-     * DUAL DATA EXTRACTION
-     * 1. Simple Grayscale for Pixel Match
-     * 2. Sobel Edge for Silhouette Match
-     */
     function extractVisualFingerprint(videoSource) {
         if(videoSource.readyState < 2) return null;
         const vw = videoSource.videoWidth, vh = videoSource.videoHeight;
@@ -856,7 +850,7 @@
             pixels[i/4] = 0.299*data[i] + 0.587*data[i+1] + 0.114*data[i+2];
         }
 
-        // 3. Edges (Sobel) - Only for fallback
+        // 3. Edges (Sobel)
         for (let y = 1; y < height - 1; y++) {
             for (let x = 1; x < width - 1; x++) {
                 const idx = y * width + x;
@@ -875,9 +869,6 @@
         return { pixels: pixels, edges: edges };
     }
 
-    /**
-     * Compare Logic
-     */
     function compareFingerprints(fp1, fp2) {
         if(!fp1 || !fp2) return { pixelScore: 999, edgeScore: 999 };
         
@@ -1166,19 +1157,8 @@
 
             arControls.correctDrift(match.quaternion, strength);
             
-            if (markerMesh) {
-                raycaster.setFromCamera(centerScreen, camera);
-                const groundY = markerMesh.position.y;
-                const dir = raycaster.ray.direction, origin = raycaster.ray.origin;
-                if (Math.abs(dir.y) > 0.05) { 
-                    const t = (groundY - origin.y) / dir.y;
-                    if (t > 0) {
-                        const targetPos = new THREE.Vector3().copy(origin).add(dir.multiplyScalar(t));
-                        markerMesh.position.x += (targetPos.x - markerMesh.position.x) * 0.1;
-                        markerMesh.position.z += (targetPos.z - markerMesh.position.z) * 0.1;
-                    }
-                }
-            }
+            // REMOVED AUTOMATIC POSITION UPDATE HERE TO FIX RESIZING BUG
+            
             debug.innerText = `LOCKED [${matchType}]: #${bestMatchIdx+1} (Diff: ${bestMatchDiff.toFixed(1)})`;
         } else {
             debug.innerText = `Scanning...`;
